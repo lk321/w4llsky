@@ -1,4 +1,4 @@
-//
+     //
 //  ContentView.swift
 //  W4llsky
 //
@@ -9,13 +9,19 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
+        VStack(spacing: 8) {
+            Image(systemName: "play.rectangle.on.rectangle")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Hello, world!")
+            Text("W4llsky")
+                .font(.headline)
+            Text("Controlled from the menu bar icon — Displays, Playback Speed, Lock Screen.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .padding()
+        .frame(width: 320)
     }
 }
 
