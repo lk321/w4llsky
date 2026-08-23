@@ -85,12 +85,36 @@ final class SystemScreenSaverTests: XCTestCase {
 
     func testFindsEveryIdleSlotAtEveryDepth() {
         let store = makeStore(provider: "default", configuration: Data())
-        XCTAssertEqual(SystemScreenSaver.idleChoices(in: store).count, 5)
+        XCTAssertEqual(SystemScreenSaver.choices(in: store, slot: SystemScreenSaver.idleSlot).count, 5)
     }
 
     func testIgnoresDesktopWallpaperChoices() {
         let store = makeStore(provider: "default", configuration: Data())
-        let providers = SystemScreenSaver.idleChoices(in: store).compactMap { $0["Provider"] as? String }
+        let providers = SystemScreenSaver.choices(in: store, slot: SystemScreenSaver.idleSlot).compactMap { $0["Provider"] as? String }
         XCTAssertFalse(providers.contains("com.apple.wallpaper.choice.image"))
+    }
+
+    /// Writing the Desktop slot is what puts the video on the lock screen, so it has to
+    /// reach every node and leave the other slot alone — and it has to drop the previous
+    /// provider's options, which WallpaperAgent would otherwise decode against ours.
+    func testWritingOneSlotLeavesTheOtherAlone() {
+        var store = makeStore(provider: "default", configuration: Data())
+        store["Displays"] = ["UUID-1": ["Idle": ["Content": ["Choices": [["Provider": "default"]]]],
+                                        "Desktop": ["Content": ["Choices": [["Provider": "com.apple.wallpaper.choice.image"]],
+                                                                "EncodedOptionValues": Data([1, 2, 3])]]]]
+        let mine: [String: Any] = ["Provider": SystemScreenSaver.choiceProvider]
+        let updated = SystemScreenSaver.replacingChoices(in: store, slot: SystemScreenSaver.desktopSlot, with: mine)
+
+        let desktop = SystemScreenSaver.choices(in: updated, slot: SystemScreenSaver.desktopSlot)
+        XCTAssertEqual(desktop.count, 3)
+        XCTAssertTrue(desktop.allSatisfy { $0["Provider"] as? String == SystemScreenSaver.choiceProvider })
+
+        let idle = SystemScreenSaver.choices(in: updated, slot: SystemScreenSaver.idleSlot)
+        XCTAssertEqual(idle.count, 5)
+        XCTAssertTrue(idle.allSatisfy { $0["Provider"] as? String == "default" })
+
+        let display = ((updated["Displays"] as? [String: Any])?["UUID-1"] as? [String: Any])
+        let content = (display?["Desktop"] as? [String: Any])?["Content"] as? [String: Any]
+        XCTAssertEqual(content?["EncodedOptionValues"] as? String, "$null")
     }
 }

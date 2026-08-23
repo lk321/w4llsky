@@ -20,6 +20,7 @@ final class WallpaperPlayer {
     /// AVPlayer silently drops a rate set before the item is ready to play, and can
     /// drop back to 0 after display sleep. One KVO re-asserts it; no polling.
     private var rateKeeper: NSKeyValueObservation?
+    private var desiredRate: Float = 0
     private var videoSize: CGSize?
     private var fillMode: FillMode
     private var hasBackdrop = false
@@ -52,6 +53,7 @@ final class WallpaperPlayer {
     }
 
     func setRate(_ rate: Float) {
+        desiredRate = rate
         // Tear the old observer down first: it captured the previous rate and would
         // re-assert it the moment this assignment changes timeControlStatus.
         rateKeeper = nil
@@ -62,6 +64,19 @@ final class WallpaperPlayer {
                 player.rate = rate
             }
         }
+    }
+
+    /// After the display sleeps, the player keeps producing frames but they stop
+    /// reaching the screen (CoreMedia reports "enqueued: 12, displayed: 0") — the
+    /// layer has lost its surface, and the window looks empty, so the desktop picture
+    /// shows through again. Re-attaching the player to the layer rebuilds it; the rate
+    /// KVO never fires for this because the player never stopped.
+    func reattachAfterWake() {
+        let layer = view.videoLayer
+        layer.player = nil
+        layer.player = queuePlayer
+        updatePresentation()
+        setRate(desiredRate)
     }
 
     func setFillMode(_ mode: FillMode) {

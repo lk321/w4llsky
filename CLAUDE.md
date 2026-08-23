@@ -124,6 +124,20 @@ letterboxes, the bars are filled with one blurred still frame of the video — g
 via `AVAssetImageGenerator` + Core Image, then static, so there is no second decode
 pipeline. The decision is re-run on every reposition, since a resolution change can flip it.
 
+### Sleep and wake
+
+Display sleep (and system sleep) leaves the wallpaper's `AVPlayerLayer` attached to a
+surface that no longer exists: the player keeps decoding, but CoreMedia reports
+`enqueued: 12, displayed: 0` and the window renders nothing, so the system's desktop
+picture shows through again and the wallpaper looks like it reverted. The rate KVO can't
+catch this — playback never stopped.
+
+`AppDelegate` observes `NSWorkspace.screensDidWakeNotification` and
+`.didWakeNotification` and calls `WallpaperEngine.handleWake()`, which re-attaches each
+player to its layer (`layer.player = nil` then back), re-runs the fill decision, re-applies
+the rate and re-orders the window front. Verified across two display-sleep cycles: a fresh
+CoreMedia context takes over with `displayed` back at ~180 per 6s dump (30 fps).
+
 ### Lock screen
 
 macOS exposes no public way to draw on the lock screen, so the supported path is a screen
@@ -170,23 +184,75 @@ saver target.
 which is what makes it appear in the picker. `canRunAtLoginWindow` is 0 for anything not
 signed by Apple — our saver runs for the idle/locked session, not at the pre-login window.
 
+### The lock screen is the *desktop wallpaper*, not a screen saver
+
+macOS 26 does not draw the lock screen background itself. The instant loginwindow locks,
+it takes a WallpaperAgent assertion — `Take Assertion 303: display: …, contentType:
+desktop` — so what sits behind the password field is whatever the **Desktop** slot of
+WallpaperAgent's store resolves to. That is the whole trick other live-wallpaper apps use
+("registers it with the system for both the desktop and lock screen"), and it is why they
+all require macOS 26: before it, that assertion didn't exist.
+
+So the same `com.apple.wallpaper.choice.screen-saver` choice we already write into every
+`Idle` node goes into every `Desktop` node instead, and macOS plays our `.saver` as the
+wallpaper — on the desktop *and* on the lock screen, with none of the screen-saver
+machinery below: no hot key, no idle timer, no `_lockReqestedBy` gate, and it survives
+locking the Mac any way at all. `SystemScreenSaver.useAsDesktopWallpaper(_:bundlePath:)`
+does it, stashing the choice it replaced so switching back restores the user's own
+wallpaper instead of a default picture.
+
+The store walkers are shared: `choices(in:slot:)` and `replacingChoices(in:slot:with:)`
+take `idleSlot` / `desktopSlot`. A `Desktop` slot also carries `EncodedOptionValues` for
+whatever provider it used to hold, which must be cleared, or WallpaperAgent decodes the
+old provider's options against the new one.
+
+The `.image` provider is no shortcut here: `WallpaperImageExtension` only understands
+`type: "imageFile"` and has no video path at all, so pointing it at an mp4 is not an
+option. Apple's own video wallpapers go through `com.apple.wallpaper.choice.aerials`,
+whose configuration names an asset in the root-owned `com.apple.idleassetsd` catalog
+(`/Library/Application Support/com.apple.idleassetsd/Aerial.sqlite`) — adding to it needs
+admin rights, which our own `.saver` avoids entirely.
+
 ### What actually starts the screen saver (and what doesn't)
 
-Locking the Mac does **not** start it. loginwindow's `ScreenSaverDaemon` logs
-"reset after screen lock, do not launch screen saver … scheduling idle timer in 1200.0s":
-the saver only runs after `idleTime` seconds of no input, locked or not. Two consequences:
+All of this governs the *screen saver* path only — the fallback for when the video is not
+set as the wallpaper above. Locking the Mac does **not** start it, and — the finding that rules out every "just react
+to the lock" idea — a manual lock also **blocks** it. `LWScreenLock` records *why* the
+screen locked in `_lockReqestedBy`, and that value is what decides whether the shield
+shows a saver or the static lock screen. A lock the user asked for is
+`kLWLockFromDirectLock` (8); every screen-saver reason is lower
+(`kLWLockFromScreenSaverIdleLaunch` = 3, `…OtherLaunch` = 4), and a lower request is
+discarded — "requestedby:4 < _lockReqestedBy:8 so don't do anything. returning". It only
+resets on unlock. So once the Mac is locked by hand:
 
-- `SystemScreenSaver.idleDelay` writes the pre-14 per-host `com.apple.screensaver idleTime`
-  preference, which macOS 26 still honours — the daemon logs `idleTime: 60` and reschedules
-  accordingly on its next check, no restart needed. That delay is the entire answer to
-  "how soon after I lock does the video play".
-- Starting the saver from outside once the screen is **already locked** is refused —
-  `-[LWScreenLock startScreenLock:] | _startLockTime already inited, exit` — so reacting to
-  the `com.apple.screenIsLocked` notification is useless and that watcher was removed.
-  Going the other way works: starting the saver locks the screen behind it, which is what
-  the menu's "Play Now" does.
+- The idle timer refuses outright: "lockRequestedBy: 8 > screensaver, so do not launch
+  screen saver", every tick until unlock. `idleDelay` therefore governs only an *unlocked*
+  idle Mac; shortening it does nothing for a lock, however the daemon is prodded.
+- `SACScreenSaverStartNow` is **accepted** and runs the byte-identical daemon sequence to a
+  working idle launch (`_screenSaverStart:` → `_idleTimerCancel` → `_startEventMonitor` →
+  `screenSaverDidFade`), yet nothing is ever drawn — the daemon never launches the saver
+  itself, WallpaperAgent does, off the lock reason. It leaves the daemon reporting
+  `screenSaverIsRunning = 1` forever, which no-ops the *next* real launch. Calling it from
+  a `com.apple.screenIsLocked` observer is worse than useless; that watcher was tried,
+  measured and removed twice. (The
+  `-[LWScreenLock startScreenLock:] | _startLockTime already inited, exit` line it logs is
+  a red herring — that is only the redundant lock step being skipped.)
 
-Getting the video on screen *immediately* on ⌃⌘Q therefore has exactly one route:
+Two side notes worth keeping: `ScreenSaverDaemon` re-reads `idleTime` on every check but
+**only** on its own timer — writing the preference produces no log line at all. The one
+call that makes it check off-schedule is `SACSetScreenSaverCanRun`, and passing the value
+it already holds does the poke without the "saver already running tell it to stop" branch
+that `false` takes.
+
+That leaves exactly one way to get video on the lock screen: **start the saver first and
+let it lock behind itself.** Two gestures do that, and W4llsky offers both — ⌃⌘Q via
+`LockHotKey`, and macOS's own "Start Screen Saver" hot corner
+(`kLWLockFromScreenSaverHotCornerActivation`), which `LockHotCorner` configures by writing
+`wvous-<corner>-corner` = 5 in `com.apple.dock` and restarting the Dock. Locking any other
+way — Apple menu, Control Center, a "Lock Screen" hot corner — is `kLWLockFromDirectLock`
+and gets the static lock screen, with no code we can write that changes it.
+
+Claiming ⌃⌘Q has exactly one route:
 claim the shortcut before macOS does and start the saver instead, since starting the
 saver locks the screen behind itself. `LockHotKey` registers ⌃⌘Q with Carbon's
 `RegisterEventHotKey` (the only API that can consume a combination system-wide;

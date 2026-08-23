@@ -14,12 +14,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let displayObserver = DisplayObserver()
     private var menuBar: MenuBarController?
     private var lockHotKey: LockHotKey?
+    private var wakeTokens: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar-only: no Dock icon, no Cmd+Tab
 
         displayObserver.onChange = { [weak self] snapshots in
             self?.reconcile(snapshots)
+        }
+
+        // Display sleep and system sleep both leave the video layers attached to a
+        // surface that no longer exists; nothing else tells us to rebuild them.
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            wakeTokens.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.engine.handleWake()
+                    self.reconcile(self.displayObserver.current)
+                }
+            })
         }
         reconcile(displayObserver.current)
 

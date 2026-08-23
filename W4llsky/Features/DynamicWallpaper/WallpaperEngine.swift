@@ -56,6 +56,14 @@ final class WallpaperEngine {
         players[displayID]?.setFillMode(mode)
     }
 
+    /// Waking from display or system sleep leaves the video layers detached.
+    func handleWake() {
+        for (id, player) in players {
+            player.reattachAfterWake()
+            windows[id]?.orderFront(nil)
+        }
+    }
+
     func setRate(_ rate: Float) {
         guard !isPaused else { return }
         players.values.forEach { $0.setRate(rate) }

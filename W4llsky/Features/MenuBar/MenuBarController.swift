@@ -149,6 +149,27 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return menu
     }
 
+    /// The mouse counterpart to ⌃⌘Q: macOS's own screen-saver corner is the only other
+    /// gesture that locks *through* the saver rather than past it.
+    private func buildHotCornerMenu() -> NSMenu {
+        let menu = NSMenu()
+        let active = LockHotCorner.active
+
+        let off = NSMenuItem(title: "Off", action: #selector(setHotCorner(_:)), keyEquivalent: "")
+        off.target = self
+        off.state = active == nil ? .on : .off
+        menu.addItem(off)
+
+        for corner in LockHotCorner.Corner.allCases {
+            let item = NSMenuItem(title: corner.title, action: #selector(setHotCorner(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = corner
+            item.state = corner == active ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     private func buildIdleDelayMenu() -> NSMenu {
         let menu = NSMenu()
         let current = SystemScreenSaver.idleDelay
@@ -220,9 +241,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(reinstall)
         }
 
-        // Locking never starts the saver by itself — this delay is what decides how
-        // long after locking the video appears.
-        menu.addItem(submenuItem(title: "Starts After", submenu: buildIdleDelayMenu()))
+        // Only the *unlocked* idle timeout: LockStartTrigger shortens it to a couple
+        // of seconds for as long as the screen is actually locked.
+        menu.addItem(submenuItem(title: "Starts After (When Unlocked)", submenu: buildIdleDelayMenu()))
 
         // ⌃⌘Q normally locks straight to the static lock screen; claiming it starts
         // the video instead, which locks behind itself.
@@ -230,6 +251,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         hotKey.target = self
         hotKey.state = store.configuration.usesLockHotKey ? .on : .off
         menu.addItem(hotKey)
+
+        // The one route that survives locking the Mac any way at all — macOS 26 draws
+        // the lock screen from the desktop wallpaper, so this is what W4llsky is
+        // really for. The two below only matter if this is off.
+        let onLockScreen = NSMenuItem(
+            title: "Play on the Lock Screen",
+            action: #selector(toggleDesktopWallpaper), keyEquivalent: ""
+        )
+        onLockScreen.target = self
+        onLockScreen.state = SystemScreenSaver.isDesktopWallpaper ? .on : .off
+        menu.addItem(onLockScreen)
+
+        menu.addItem(submenuItem(title: "Hot Corner Plays the Video", submenu: buildHotCornerMenu()))
 
         let test = NSMenuItem(title: "Play Now (locks the Mac)", action: #selector(testScreenSaver), keyEquivalent: "")
         test.target = self
@@ -331,7 +365,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         onLockHotKeyChanged?()
         offerTest(
             "Lock screen video set.",
-            detail: "macOS starts it after the Mac sits idle for \(SystemScreenSaver.idleDelay / 60) min — locked or not. Change that under Starts After, or use Play Now to start it immediately."
+            detail: "macOS only shows a screen saver on a lock that the saver itself started, so use ⌃⌘Q or the hot corner below — locking any other way gets the static lock screen, and no setting changes that."
         )
     }
 
@@ -368,6 +402,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         onLockHotKeyChanged?()
     }
 
+    @objc private func setHotCorner(_ sender: NSMenuItem) {
+        LockHotCorner.use(sender.representedObject as? LockHotCorner.Corner)
+    }
+
+    @objc private func toggleDesktopWallpaper() {
+        let enable = !SystemScreenSaver.isDesktopWallpaper
+        do {
+            if enable { try enableScreenSaver() }
+            try SystemScreenSaver.useAsDesktopWallpaper(enable, bundlePath: ScreenSaverInstaller.installedURL)
+        } catch {
+            report(enable ? "Couldn't put the video on the lock screen."
+                          : "Couldn't restore your wallpaper.",
+                   detail: error.localizedDescription)
+        }
+    }
+
     @objc private func setIdleDelay(_ sender: NSMenuItem) {
         guard let seconds = sender.representedObject as? Int else { return }
         SystemScreenSaver.idleDelay = seconds
@@ -383,7 +433,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         offerTest(
             "W4llsky is now your screen saver.",
-            detail: "macOS starts it after the Mac sits idle for \(SystemScreenSaver.idleDelay / 60) min — locked or not. Change that under Starts After, or use Play Now to start it immediately."
+            detail: "macOS only shows a screen saver on a lock that the saver itself started, so use ⌃⌘Q or the hot corner below — locking any other way gets the static lock screen, and no setting changes that."
         )
     }
 
