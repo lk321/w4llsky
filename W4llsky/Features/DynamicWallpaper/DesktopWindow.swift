@@ -34,9 +34,6 @@ final class DesktopWindow: NSWindow {
 
         // Present on every Space, don't get swept into Exposé/Cmd+Tab/Mission Control cycling.
         collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-
-        contentView = NSView(frame: screen.frame)
-        contentView?.wantsLayer = true
     }
 
     override var canBecomeKey: Bool { false }

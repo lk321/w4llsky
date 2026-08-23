@@ -6,7 +6,18 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D5AA00000000000000000011 /* W4llsky.saver in Embed Screen Saver */ = {isa = PBXBuildFile; fileRef = D5AA00000000000000000001 /* W4llsky.saver */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
+		D5AA00000000000000000013 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D5F55253303AAA5A00C4020D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D5AA00000000000000000007;
+			remoteInfo = W4llskySaver;
+		};
 		D5F55269303AAA5B00C4020D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = D5F55253303AAA5A00C4020D /* Project object */;
@@ -23,13 +34,38 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		D5AA00000000000000000012 /* Embed Screen Saver */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D5AA00000000000000000011 /* W4llsky.saver in Embed Screen Saver */,
+			);
+			name = "Embed Screen Saver";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		D5AA00000000000000000001 /* W4llsky.saver */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = W4llsky.saver; sourceTree = BUILT_PRODUCTS_DIR; };
 		D5F5525B303AAA5A00C4020D /* W4llsky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = W4llsky.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D5F55268303AAA5B00C4020D /* W4llskyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = W4llskyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D5F55272303AAA5B00C4020D /* W4llskyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = W4llskyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		D5AA00000000000000000002 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		D5AA00000000000000000003 /* W4llskySaver */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = W4llskySaver;
+			sourceTree = "<group>";
+		};
 		D5F5525D303AAA5A00C4020D /* W4llsky */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = W4llsky;
@@ -48,6 +84,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		D5AA00000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D5F55258303AAA5A00C4020D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -76,6 +119,8 @@
 			isa = PBXGroup;
 			children = (
 				D5F5525D303AAA5A00C4020D /* W4llsky */,
+				D5AA00000000000000000002 /* Shared */,
+				D5AA00000000000000000003 /* W4llskySaver */,
 				D5F5526B303AAA5B00C4020D /* W4llskyTests */,
 				D5F55275303AAA5B00C4020D /* W4llskyUITests */,
 				D5F5525C303AAA5A00C4020D /* Products */,
@@ -86,6 +131,7 @@
 			isa = PBXGroup;
 			children = (
 				D5F5525B303AAA5A00C4020D /* W4llsky.app */,
+				D5AA00000000000000000001 /* W4llsky.saver */,
 				D5F55268303AAA5B00C4020D /* W4llskyTests.xctest */,
 				D5F55272303AAA5B00C4020D /* W4llskyUITests.xctest */,
 			);
@@ -95,6 +141,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		D5AA00000000000000000007 /* W4llskySaver */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D5AA00000000000000000010 /* Build configuration list for PBXNativeTarget "W4llskySaver" */;
+			buildPhases = (
+				D5AA00000000000000000004 /* Sources */,
+				D5AA00000000000000000005 /* Frameworks */,
+				D5AA00000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D5AA00000000000000000002 /* Shared */,
+				D5AA00000000000000000003 /* W4llskySaver */,
+			);
+			name = W4llskySaver;
+			packageProductDependencies = (
+			);
+			productName = W4llskySaver;
+			productReference = D5AA00000000000000000001 /* W4llsky.saver */;
+			productType = "com.apple.product-type.bundle";
+		};
 		D5F5525A303AAA5A00C4020D /* W4llsky */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D5F5527C303AAA5B00C4020D /* Build configuration list for PBXNativeTarget "W4llsky" */;
@@ -102,12 +171,15 @@
 				D5F55257303AAA5A00C4020D /* Sources */,
 				D5F55258303AAA5A00C4020D /* Frameworks */,
 				D5F55259303AAA5A00C4020D /* Resources */,
+				D5AA00000000000000000012 /* Embed Screen Saver */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				D5AA00000000000000000014 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
+				D5AA00000000000000000002 /* Shared */,
 				D5F5525D303AAA5A00C4020D /* W4llsky */,
 			);
 			name = W4llsky;
@@ -173,6 +245,9 @@
 				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
+					D5AA00000000000000000007 = {
+						CreatedOnToolsVersion = 26.6;
+					};
 					D5F5525A303AAA5A00C4020D = {
 						CreatedOnToolsVersion = 26.6;
 					};
@@ -201,6 +276,7 @@
 			projectRoot = "";
 			targets = (
 				D5F5525A303AAA5A00C4020D /* W4llsky */,
+				D5AA00000000000000000007 /* W4llskySaver */,
 				D5F55267303AAA5B00C4020D /* W4llskyTests */,
 				D5F55271303AAA5B00C4020D /* W4llskyUITests */,
 			);
@@ -208,6 +284,13 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		D5AA00000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D5F55259303AAA5A00C4020D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -232,6 +315,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		D5AA00000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D5F55257303AAA5A00C4020D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -256,6 +346,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		D5AA00000000000000000014 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D5AA00000000000000000007 /* W4llskySaver */;
+			targetProxy = D5AA00000000000000000013 /* PBXContainerItemProxy */;
+		};
 		D5F5526A303AAA5B00C4020D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = D5F5525A303AAA5A00C4020D /* W4llsky */;
@@ -269,6 +364,64 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		D5AA00000000000000000008 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = W4llskySaverView;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.W4llsky.saver;
+				PRODUCT_MODULE_NAME = W4llskySaver;
+				PRODUCT_NAME = W4llsky;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = saver;
+			};
+			name = Debug;
+		};
+		D5AA00000000000000000009 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSPrincipalClass = W4llskySaverView;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.W4llsky.saver;
+				PRODUCT_MODULE_NAME = W4llskySaver;
+				PRODUCT_NAME = W4llsky;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = saver;
+			};
+			name = Release;
+		};
 		D5F5527A303AAA5B00C4020D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -524,6 +677,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D5AA00000000000000000010 /* Build configuration list for PBXNativeTarget "W4llskySaver" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D5AA00000000000000000008 /* Debug */,
+				D5AA00000000000000000009 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		D5F55256303AAA5A00C4020D /* Build configuration list for PBXProject "W4llsky" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

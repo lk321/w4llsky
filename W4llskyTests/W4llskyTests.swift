@@ -2,37 +2,95 @@
 //  W4llskyTests.swift
 //  W4llskyTests
 //
-//  Created by Antonio Orozco on 22/08/26.
+//  The scaling decision is the one piece of real logic here: get it wrong and
+//  every wallpaper is either cropped in half or letterboxed for no reason.
 //
 
+import AVFoundation
 import XCTest
 @testable import W4llsky
 
 final class W4llskyTests: XCTestCase {
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    private let ultrawide = CGSize(width: 5120, height: 1440)
+    private let sixteenNine = CGSize(width: 3840, height: 2160)
+
+    func testAspectFillOnAMatchingDisplayKeepsEverything() {
+        XCTAssertEqual(VideoPresentation.visibleFraction(video: ultrawide, in: ultrawide), 1, accuracy: 0.001)
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    func testSixteenNineOnUltrawideLosesHalfTheFrame() {
+        let fraction = VideoPresentation.visibleFraction(video: sixteenNine, in: ultrawide)
+        XCTAssertEqual(fraction, 0.5, accuracy: 0.001)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-        // XCTest Documentation
-        // https://developer.apple.com/documentation/xctest
+    func testVisibleFractionIsSymmetric() {
+        XCTAssertEqual(
+            VideoPresentation.visibleFraction(video: sixteenNine, in: ultrawide),
+            VideoPresentation.visibleFraction(video: ultrawide, in: sixteenNine),
+            accuracy: 0.001
+        )
     }
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
-        }
+    func testDegenerateSizesDontDivideByZero() {
+        XCTAssertEqual(VideoPresentation.visibleFraction(video: .zero, in: ultrawide), 1)
+        XCTAssertEqual(VideoPresentation.visibleFraction(video: sixteenNine, in: .zero), 1)
     }
 
+    func testAutoLetterboxesWhenFillingWouldCropTooMuch() {
+        XCTAssertEqual(VideoPresentation.gravity(.auto, video: sixteenNine, in: ultrawide), .resizeAspect)
+    }
+
+    func testAutoFillsWhenAspectsAreClose() {
+        // 16:9 video on a 16:10 display keeps 90% of the frame — not worth bars.
+        let sixteenTen = CGSize(width: 2560, height: 1600)
+        XCTAssertEqual(VideoPresentation.gravity(.auto, video: sixteenNine, in: sixteenTen), .resizeAspectFill)
+        XCTAssertEqual(VideoPresentation.gravity(.auto, video: ultrawide, in: ultrawide), .resizeAspectFill)
+    }
+
+    func testAutoFillsUntilTheTrackSizeIsKnown() {
+        XCTAssertEqual(VideoPresentation.gravity(.auto, video: nil, in: ultrawide), .resizeAspectFill)
+    }
+
+    func testManualModesIgnoreAspectRatios() {
+        XCTAssertEqual(VideoPresentation.gravity(.fill, video: sixteenNine, in: ultrawide), .resizeAspectFill)
+        XCTAssertEqual(VideoPresentation.gravity(.fit, video: ultrawide, in: ultrawide), .resizeAspect)
+    }
+
+    func testLockScreenPathsSitOutsideTheSandboxContainer() {
+        // The screen saver resolves these from its own (sandboxed) process; if this
+        // ever starts pointing at a container, the saver silently plays nothing.
+        XCTAssertTrue(LockScreenLibrary.videoURL.path.hasSuffix("/Library/Application Support/W4llsky/LockScreen.mp4"))
+        XCTAssertFalse(LockScreenLibrary.videoURL.path.contains("/Library/Containers/"))
+    }
+}
+
+/// The screen saver selection lives in an undocumented Apple plist; this pins the
+/// tree walk that finds every place a screen saver can be chosen, because missing
+/// one of them would make the menu claim a selection that isn't really in effect.
+final class SystemScreenSaverTests: XCTestCase {
+
+    /// Same shape as ~/Library/Application Support/com.apple.wallpaper/Store/Index.plist:
+    /// Idle nodes hang off the global entry, each display, and each Space.
+    private func makeStore(provider: String, configuration: Data) -> [String: Any] {
+        let idle: [String: Any] = ["Content": ["Choices": [["Provider": provider, "Configuration": configuration, "Files": []]]]]
+        let desktop: [String: Any] = ["Content": ["Choices": [["Provider": "com.apple.wallpaper.choice.image", "Files": []]]]]
+        return [
+            "AllSpacesAndDisplays": ["Idle": idle, "Desktop": desktop, "Type": "idle"],
+            "Displays": ["UUID-1": ["Idle": idle, "Desktop": desktop]],
+            "Spaces": ["": ["Default": ["Idle": idle], "Displays": ["UUID-1": ["Idle": idle]]]],
+            "SystemDefault": ["Idle": idle, "Desktop": desktop],
+        ]
+    }
+
+    func testFindsEveryIdleSlotAtEveryDepth() {
+        let store = makeStore(provider: "default", configuration: Data())
+        XCTAssertEqual(SystemScreenSaver.idleChoices(in: store).count, 5)
+    }
+
+    func testIgnoresDesktopWallpaperChoices() {
+        let store = makeStore(provider: "default", configuration: Data())
+        let providers = SystemScreenSaver.idleChoices(in: store).compactMap { $0["Provider"] as? String }
+        XCTAssertFalse(providers.contains("com.apple.wallpaper.choice.image"))
+    }
 }

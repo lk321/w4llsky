@@ -18,15 +18,15 @@ final class WallpaperEngine {
         windows[displayID] != nil
     }
 
-    func assign(bookmark: Data, rate: Float, to screen: NSScreen, displayID: String) {
+    func assign(bookmark: Data, rate: Float, fillMode: FillMode, to screen: NSScreen, displayID: String) {
         remove(displayID: displayID)
         guard let url = SecurityScopedBookmark.resolve(bookmark) else { return }
 
         let window = DesktopWindow(screen: screen)
-        let player = WallpaperPlayer(url: url)
-        player.layer.frame = window.contentView?.bounds ?? screen.frame
-        window.contentView?.layer?.addSublayer(player.layer)
+        let player = WallpaperPlayer(url: url, fillMode: fillMode)
+        window.contentView = player.view
         window.orderFront(nil)
+        player.updatePresentation() // the view now has the screen's size
         player.setRate(isPaused ? 0 : rate)
 
         windows[displayID] = window
@@ -45,10 +45,15 @@ final class WallpaperEngine {
         }
     }
 
+    /// Also re-decides fill vs. letterbox: a resolution change can flip the answer.
     func reposition(displayID: String, screen: NSScreen) {
         guard let window = windows[displayID] else { return }
         window.setFrame(screen.frame, display: true)
-        players[displayID]?.layer.frame = window.contentView?.bounds ?? screen.frame
+        players[displayID]?.updatePresentation()
+    }
+
+    func setFillMode(_ mode: FillMode, displayID: String) {
+        players[displayID]?.setFillMode(mode)
     }
 
     func setRate(_ rate: Float) {

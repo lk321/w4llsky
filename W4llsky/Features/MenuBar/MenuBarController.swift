@@ -12,10 +12,19 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 final class MenuBarController: NSObject, NSMenuDelegate {
+    /// Which display (nil = lock screen) a scaling menu item applies to.
+    private struct ScalingChoice {
+        let displayID: String?
+        let mode: FillMode
+    }
+
     private let engine: WallpaperEngine
     private let store: WallpaperStore
     private let displayObserver: DisplayObserver
     private let resourceMonitor = AppResourceMonitor()
+
+    /// Lets AppDelegate re-claim or release the ⌃⌘Q hot key.
+    var onLockHotKeyChanged: (() -> Void)?
 
     private let statusItem: NSStatusItem
     private var isPaused = false
@@ -108,7 +117,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             choose.representedObject = display.id
             menu.addItem(choose)
 
-            if assignment != nil {
+            if let assignment {
+                menu.addItem(submenuItem(
+                    title: "Scaling",
+                    submenu: buildScalingMenu(current: assignment.fillMode, displayID: display.id)
+                ))
+
                 let remove = NSMenuItem(title: "Remove Wallpaper", action: #selector(removeVideo(_:)), keyEquivalent: "")
                 remove.target = self
                 remove.representedObject = display.id
@@ -118,6 +132,34 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        return menu
+    }
+
+    /// Auto keeps the video uncropped when the display's aspect ratio is far from
+    /// the video's (an ultrawide showing a 16:9 clip), and fills when it's close.
+    private func buildScalingMenu(current: FillMode, displayID: String?) -> NSMenu {
+        let menu = NSMenu()
+        for mode in FillMode.allCases {
+            let item = NSMenuItem(title: mode.title, action: #selector(setFillMode(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ScalingChoice(displayID: displayID, mode: mode)
+            item.state = mode == current ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func buildIdleDelayMenu() -> NSMenu {
+        let menu = NSMenu()
+        let current = SystemScreenSaver.idleDelay
+        for minutes in [1, 2, 5, 10, 20] {
+            let item = NSMenuItem(title: minutes == 1 ? "1 minute" : "\(minutes) minutes",
+                                  action: #selector(setIdleDelay(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = minutes * 60
+            item.state = current == minutes * 60 ? .on : .off
+            menu.addItem(item)
+        }
         return menu
     }
 
@@ -135,12 +177,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func buildLockScreenMenu() -> NSMenu {
         let menu = NSMenu()
-        menu.addItem(infoItem("Requires enabling the W4llsky screen saver once"))
+        let lock = LockScreenLibrary.load()
 
-        let lock = store.configuration.lockScreen
-        if let lock {
-            menu.addItem(infoItem("   \(lock.videoName)"))
-        }
+        menu.addItem(infoItem(lock.map { "   \($0.videoName)" } ?? "No video set"))
 
         let choose = NSMenuItem(
             title: lock == nil ? "Choose Video…" : "Change Video…",
@@ -150,14 +189,53 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         choose.target = self
         menu.addItem(choose)
 
-        if lock != nil {
+        if let lock {
+            menu.addItem(submenuItem(
+                title: "Scaling",
+                submenu: buildScalingMenu(current: lock.fillMode, displayID: nil)
+            ))
+
             let remove = NSMenuItem(title: "Remove", action: #selector(removeLockScreenVideo), keyEquivalent: "")
             remove.target = self
             menu.addItem(remove)
         }
 
         menu.addItem(.separator())
-        let settings = NSMenuItem(title: "Open Screen Saver Settings…", action: #selector(openScreenSaverSettings), keyEquivalent: "")
+
+        // macOS has no public way to draw on the lock screen; the supported path is
+        // a screen saver, which has to be installed *and* selected system-wide.
+        // Both states are read back from the system, never assumed.
+        let installed = ScreenSaverInstaller.isInstalled
+        let selected = SystemScreenSaver.isSelected
+        menu.addItem(infoItem(installed ? "Screen saver: installed" : "Screen saver: not installed"))
+        menu.addItem(infoItem(selected ? "Selected in macOS: yes" : "Selected in macOS: NO — pick it below"))
+
+        if !installed || !selected {
+            let enable = NSMenuItem(title: "Enable W4llsky Screen Saver", action: #selector(enableScreenSaverFromMenu), keyEquivalent: "")
+            enable.target = self
+            menu.addItem(enable)
+        } else {
+            let reinstall = NSMenuItem(title: "Reinstall Screen Saver", action: #selector(installScreenSaver), keyEquivalent: "")
+            reinstall.target = self
+            menu.addItem(reinstall)
+        }
+
+        // Locking never starts the saver by itself — this delay is what decides how
+        // long after locking the video appears.
+        menu.addItem(submenuItem(title: "Starts After", submenu: buildIdleDelayMenu()))
+
+        // ⌃⌘Q normally locks straight to the static lock screen; claiming it starts
+        // the video instead, which locks behind itself.
+        let hotKey = NSMenuItem(title: "⌃⌘Q Plays the Video", action: #selector(toggleLockHotKey), keyEquivalent: "")
+        hotKey.target = self
+        hotKey.state = store.configuration.usesLockHotKey ? .on : .off
+        menu.addItem(hotKey)
+
+        let test = NSMenuItem(title: "Play Now (locks the Mac)", action: #selector(testScreenSaver), keyEquivalent: "")
+        test.target = self
+        menu.addItem(test)
+
+        let settings = NSMenuItem(title: "Open Wallpaper Settings…", action: #selector(openScreenSaverSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
 
@@ -183,11 +261,25 @@ final class MenuBarController: NSObject, NSMenuDelegate {
               let screen = displayObserver.screen(forID: displayID) else { return }
 
         guard let url = pickVideoURL(message: "Choose a video for \(screen.localizedName)") else { return }
-        guard let bookmark = SecurityScopedBookmark.makeBookmark(for: url) else { return }
+        guard let bookmark = SecurityScopedBookmark.makeBookmark(for: url) else {
+            report("W4llsky couldn't keep a reference to that file.")
+            return
+        }
 
-        store.configuration.assignments[displayID] = WallpaperAssignment(bookmarkData: bookmark, videoName: url.lastPathComponent)
+        let fillMode = store.configuration.assignments[displayID]?.fillMode ?? .auto
+        store.configuration.assignments[displayID] = WallpaperAssignment(
+            bookmarkData: bookmark,
+            videoName: url.lastPathComponent,
+            fillMode: fillMode
+        )
         store.save()
-        engine.assign(bookmark: bookmark, rate: store.configuration.playbackRate, to: screen, displayID: displayID)
+        engine.assign(
+            bookmark: bookmark,
+            rate: store.configuration.playbackRate,
+            fillMode: fillMode,
+            to: screen,
+            displayID: displayID
+        )
     }
 
     @objc private func removeVideo(_ sender: NSMenuItem) {
@@ -197,28 +289,126 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         engine.remove(displayID: displayID)
     }
 
+    @objc private func setFillMode(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? ScalingChoice else { return }
+
+        guard let displayID = choice.displayID else {
+            guard var config = LockScreenLibrary.load() else { return }
+            config.fillMode = choice.mode
+            do { try LockScreenLibrary.save(config) } catch { report(error.localizedDescription) }
+            return
+        }
+
+        store.configuration.assignments[displayID]?.fillMode = choice.mode
+        store.save()
+        engine.setFillMode(choice.mode, displayID: displayID)
+    }
+
     @objc private func setSpeed(_ sender: NSMenuItem) {
         guard let speed = sender.representedObject as? Float else { return }
         store.configuration.playbackRate = speed
         store.save()
         engine.setRate(speed)
+
+        if var lock = LockScreenLibrary.load() {
+            lock.rate = speed
+            try? LockScreenLibrary.save(lock)
+        }
     }
 
     @objc private func chooseLockScreenVideo() {
         guard let url = pickVideoURL(message: "Choose a video for the Lock Screen saver") else { return }
-        guard let bookmark = SecurityScopedBookmark.makeBookmark(for: url) else { return }
-        store.configuration.lockScreen = WallpaperAssignment(bookmarkData: bookmark, videoName: url.lastPathComponent)
-        store.save()
+
+        let fillMode = LockScreenLibrary.load()?.fillMode ?? .auto
+        do {
+            try LockScreenLibrary.install(video: url, rate: store.configuration.playbackRate, fillMode: fillMode)
+            try enableScreenSaver()
+        } catch {
+            report("Couldn't set that video for the lock screen.", detail: error.localizedDescription)
+            return
+        }
+
+        onLockHotKeyChanged?()
+        offerTest(
+            "Lock screen video set.",
+            detail: "macOS starts it after the Mac sits idle for \(SystemScreenSaver.idleDelay / 60) min — locked or not. Change that under Starts After, or use Play Now to start it immediately."
+        )
     }
 
     @objc private func removeLockScreenVideo() {
-        store.configuration.lockScreen = nil
+        LockScreenLibrary.clear()
+    }
+
+    /// The one step macOS keeps for itself: there is no API to select a screen saver,
+    /// so say exactly where the switch is instead of pretending it happened.
+    @objc private func showHowToSelect() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "One step left: pick W4llsky as your screen saver."
+        alert.informativeText = """
+        macOS only plays the screen saver you select yourself, and macOS 26 removed the         Screen Saver pane — it now lives inside Wallpaper settings.
+
+        Open Wallpaper settings, scroll down to Screen Saver, and pick W4llsky in the         Other section (below macOS's own screen savers).
+        """
+        alert.addButton(withTitle: "Open Wallpaper Settings")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            SystemScreenSaver.openSettings()
+        }
+    }
+
+    @objc private func testScreenSaver() {
+        SystemScreenSaver.startNow()
+    }
+
+    @objc private func toggleLockHotKey() {
+        store.configuration.lockHotKey = !store.configuration.usesLockHotKey
         store.save()
+        onLockHotKeyChanged?()
+    }
+
+    @objc private func setIdleDelay(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Int else { return }
+        SystemScreenSaver.idleDelay = seconds
+    }
+
+    @objc private func enableScreenSaverFromMenu() {
+        do {
+            try enableScreenSaver()
+        } catch {
+            report("Couldn't enable the W4llsky screen saver.", detail: error.localizedDescription)
+            showHowToSelect()
+            return
+        }
+        offerTest(
+            "W4llsky is now your screen saver.",
+            detail: "macOS starts it after the Mac sits idle for \(SystemScreenSaver.idleDelay / 60) min — locked or not. Change that under Starts After, or use Play Now to start it immediately."
+        )
+    }
+
+    /// Installing the .saver only lists it — macOS still runs whatever is *selected*.
+    private func enableScreenSaver() throws {
+        if !ScreenSaverInstaller.isInstalled {
+            try ScreenSaverInstaller.install()
+        }
+        if !SystemScreenSaver.isSelected {
+            try SystemScreenSaver.select(bundlePath: ScreenSaverInstaller.installedURL)
+        }
+    }
+
+    @objc private func installScreenSaver() {
+        do {
+            try ScreenSaverInstaller.install()
+        } catch {
+            report("Couldn't install the screen saver.", detail: error.localizedDescription)
+            return
+        }
+        report("W4llsky screen saver reinstalled.", style: .informational)
     }
 
     @objc private func openScreenSaverSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.Screen-Saver-Settings.extension") else { return }
-        NSWorkspace.shared.open(url)
+        SystemScreenSaver.openSettings()
     }
 
     @objc private func togglePause() {
@@ -264,5 +454,28 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func report(_ message: String, detail: String = "", style: NSAlert.Style = .warning) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = style
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.runModal()
+    }
+
+    /// Seeing it run is the only real confirmation, so always offer it.
+    private func offerTest(_ message: String, detail: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Test Now")
+        alert.addButton(withTitle: "Done")
+        if alert.runModal() == .alertFirstButtonReturn {
+            SystemScreenSaver.startNow()
+        }
     }
 }

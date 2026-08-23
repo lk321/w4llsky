@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = WallpaperEngine()
     private let displayObserver = DisplayObserver()
     private var menuBar: MenuBarController?
+    private var lockHotKey: LockHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar-only: no Dock icon, no Cmd+Tab
@@ -23,6 +24,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reconcile(displayObserver.current)
 
         menuBar = MenuBarController(engine: engine, store: store, displayObserver: displayObserver)
+        refreshLockHotKey()
+        menuBar?.onLockHotKeyChanged = { [weak self] in self?.refreshLockHotKey() }
+    }
+
+    /// Claimed only while the user wants it, so the plain macOS lock stays available
+    /// by turning the menu item off.
+    private func refreshLockHotKey() {
+        guard store.configuration.usesLockHotKey, LockScreenLibrary.hasVideo, SystemScreenSaver.isSelected else {
+            lockHotKey = nil
+            return
+        }
+        if lockHotKey == nil {
+            lockHotKey = LockHotKey { SystemScreenSaver.startNow() }
+        }
     }
 
     /// Applies persisted assignments to whatever displays are currently connected,
@@ -40,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 engine.assign(
                     bookmark: assignment.bookmarkData,
                     rate: store.configuration.playbackRate,
+                    fillMode: assignment.fillMode,
                     to: screen,
                     displayID: snapshot.id
                 )

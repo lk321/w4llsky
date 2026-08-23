@@ -3,24 +3,26 @@
 //  W4llsky
 //
 //  Lightweight Codable config in UserDefaults — no database needed for this size of data.
+//  The lock screen video is not stored here: it lives in LockScreenLibrary, the
+//  one place the sandboxed screen saver can also read.
 //
 
 import Foundation
 
-enum FillMode: String, Codable {
-    case fill, fit
-}
-
 struct WallpaperAssignment: Codable, Equatable {
     var bookmarkData: Data
     var videoName: String
-    var fillMode: FillMode = .fill
+    var fillMode: FillMode = .auto
 }
 
 struct WallpaperConfiguration: Codable {
     var assignments: [String: WallpaperAssignment] = [:] // keyed by DisplaySnapshot.id
-    var lockScreen: WallpaperAssignment?
     var playbackRate: Float = 1.0
+    /// Optional so older stored configurations still decode — the synthesized
+    /// decoder ignores property defaults but tolerates a missing optional.
+    var lockHotKey: Bool?
+
+    var usesLockHotKey: Bool { lockHotKey ?? true }
 }
 
 final class WallpaperStore {
