@@ -24,7 +24,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let resourceMonitor = AppResourceMonitor()
 
     /// Lets AppDelegate re-claim or release the ⌃⌘Q hot key.
-    var onLockHotKeyChanged: (() -> Void)?
+    /// Anything that changes who draws the lock screen / wallpaper: the hot key has
+    /// to be re-claimed and the desktop windows re-reconciled against it.
+    var onLockSetupChanged: (() -> Void)?
 
     private let statusItem: NSStatusItem
     private var isPaused = false
@@ -362,7 +364,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
 
-        onLockHotKeyChanged?()
+        onLockSetupChanged?()
         offerTest(
             "Lock screen video set.",
             detail: "macOS only shows a screen saver on a lock that the saver itself started, so use ⌃⌘Q or the hot corner below — locking any other way gets the static lock screen, and no setting changes that."
@@ -399,7 +401,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleLockHotKey() {
         store.configuration.lockHotKey = !store.configuration.usesLockHotKey
         store.save()
-        onLockHotKeyChanged?()
+        onLockSetupChanged?()
     }
 
     @objc private func setHotCorner(_ sender: NSMenuItem) {
@@ -416,6 +418,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                           : "Couldn't restore your wallpaper.",
                    detail: error.localizedDescription)
         }
+        onLockSetupChanged?()
     }
 
     @objc private func setIdleDelay(_ sender: NSMenuItem) {

@@ -38,6 +38,17 @@ enum LockScreenLibrary {
         FileManager.default.fileExists(atPath: videoURL.path)
     }
 
+    /// True when `url` is the very file the system wallpaper is playing. `install`
+    /// hard-links the source, so the two are one file on disk whenever they share a
+    /// volume — comparing paths would miss that, since the whole point of this folder
+    /// is that the video is *not* at its original path any more.
+    static func isSameFile(as url: URL) -> Bool {
+        guard let mine = try? videoURL.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+              let theirs = try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+        else { return false }
+        return mine.isEqual(theirs)
+    }
+
     static func load() -> LockScreenConfig? {
         guard hasVideo,
               let data = try? Data(contentsOf: configURL),

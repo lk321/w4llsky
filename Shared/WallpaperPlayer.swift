@@ -37,6 +37,11 @@ final class WallpaperPlayer {
         // saver from ever starting (loginwindow logs "PMNoDisplaySleepEnabled so do not
         // launch screen saver").
         player.preventsDisplaySleepDuringVideoPlayback = false
+        // The file is local, so there is nothing to buffer and nothing to stall on.
+        // Left at its default the player holds the first rate change back while it
+        // decides it has "enough" media, which on the lock screen reads as a video
+        // that sits on one frame for a second before it starts moving.
+        player.automaticallyWaitsToMinimizeStalling = false
         self.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
         self.queuePlayer = player
 

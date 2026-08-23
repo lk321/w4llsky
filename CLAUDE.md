@@ -213,6 +213,38 @@ whose configuration names an asset in the root-owned `com.apple.idleassetsd` cat
 (`/Library/Application Support/com.apple.idleassetsd/Aerial.sqlite`) — adding to it needs
 admin rights, which our own `.saver` avoids entirely.
 
+### Who draws what, and why it matters for CPU
+
+There is no separate lock-screen content: WallpaperKit only has `contentType: desktop`
+and `contentType: screenSaver`. So once the video is the system wallpaper, **the lock
+screen video and the desktop video are necessarily the same file** — there is no
+arrangement in which they differ.
+
+That makes overlap the thing to avoid. When the same video is both the system wallpaper
+and a display's assignment, `AppDelegate.reconcile` skips creating our own
+`DesktopWindow` for it (`LockScreenLibrary.isSameFile(as:)`, compared by
+`fileResourceIdentifierKey` — `install` hard-links the source, so paths differ but the
+inode does not). Drawing our own copy over the system's would decode the file twice, and
+worse: our window *covers* the system's copy, which macOS then throttles to ~1.5 fps
+(measured: `enqueued: 8, displayed: 0`). The lock screen inherits that throttled pipeline
+and has to spin it back up to 30 fps in front of the user — which is exactly what a
+"the wallpaper stutters for the first two seconds after locking" report looks like. If a
+display is deliberately given a *different* video, our window stays and so does that
+cost; that is inherent, not a bug.
+
+For the windows we do draw, `WallpaperEngine` observes
+`NSWindow.didChangeOcclusionStateNotification` and stops the player when the window is
+not `.visible`. Note AppKit only reports occlusion when the window is *fully* covered by
+opaque windows, so a scattered desktop keeps playing (correctly — you can see it) and a
+full-screen app stops it. Every path that can leave a player stopped re-derives the rate
+from `rate(for:)` rather than restoring the last one — `handleWake`, `reposition` — so a
+paused wallpaper can never stay paused just because nothing else happened to move.
+
+`WallpaperPlayer` sets `automaticallyWaitsToMinimizeStalling = false`: the file is local,
+there is nothing to buffer, and the default holds the first rate change back while
+AVFoundation decides it has enough media — which reads as a video sitting on one frame
+before it starts moving.
+
 ### What actually starts the screen saver (and what doesn't)
 
 All of this governs the *screen saver* path only — the fallback for when the video is not
