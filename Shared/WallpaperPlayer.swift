@@ -105,10 +105,17 @@ final class WallpaperPlayer {
     /// Re-decides fill vs. letterbox for the view's current size. Cheap — call it
     /// after any resize; only the first letterboxed layout pays for a backdrop.
     func updatePresentation() {
-        let gravity = VideoPresentation.gravity(fillMode, video: videoSize, in: view.bounds.size)
+        let bounds = view.bounds.size
+        let gravity = VideoPresentation.gravity(fillMode, video: videoSize, in: bounds)
+        let zoom = VideoPresentation.zoom(fillMode, video: videoSize, in: bounds)
         view.videoLayer.videoGravity = gravity
+        view.videoZoom = zoom
 
-        let needsBackdrop = gravity == .resizeAspect
+        // Fraction of the view an aspect-fitted, `zoom`-enlarged video covers. `.smart`
+        // reaches 1 whenever a full cover costs less than the threshold, and then there
+        // is nothing for a backdrop to fill.
+        let covered = zoom * (videoSize.map { VideoPresentation.visibleFraction(video: $0, in: bounds) } ?? 1)
+        let needsBackdrop = gravity == .resizeAspect && covered < 0.999
         view.backdropLayer.isHidden = !needsBackdrop
         guard needsBackdrop, !hasBackdrop else { return }
 

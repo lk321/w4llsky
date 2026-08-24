@@ -9,19 +9,25 @@
 import AVFoundation
 import CoreImage
 
+/// Listed in the order the menu shows them: most cropping first, and `auto` — which
+/// only ever picks one of the other two — last.
 enum FillMode: String, Codable, CaseIterable {
-    /// Fill unless that would crop away too much of the frame, then letterbox.
-    case auto
     /// Always cover the display (crops).
     case fill
+    /// Cover the display too, but never crop away more than `autoFillThreshold`
+    /// of the frame: whatever cover is still missing becomes (small) blurred bars.
+    case smart
     /// Never crop (letterboxes onto the blurred backdrop).
     case fit
+    /// Fill unless that would crop away too much of the frame, then letterbox.
+    case auto
 
     var title: String {
         switch self {
-        case .auto: "Auto"
         case .fill: "Fill (crop)"
+        case .smart: "Smart (crop a little)"
         case .fit: "Fit (no crop)"
+        case .auto: "Auto (fill or fit)"
         }
     }
 }
@@ -48,11 +54,30 @@ enum VideoPresentation {
             return .resizeAspectFill
         case .fit:
             return .resizeAspect
+        case .smart:
+            // `zoom` does the cropping by enlarging the layer, so the gravity is the
+            // uncropped one — until the track size is known, where it would show bars.
+            return video == nil ? .resizeAspectFill : .resizeAspect
         case .auto:
             // Until the track size is known, filling is the safer guess (no bars).
             guard let video else { return .resizeAspectFill }
             return visibleFraction(video: video, in: bounds) >= autoFillThreshold ? .resizeAspectFill : .resizeAspect
         }
+    }
+
+    /// How much bigger than the view the video layer is drawn — the whole of `.smart`.
+    /// Aspect-fit at zoom `z` keeps `1/z` of the frame and covers `z · fill` of the
+    /// display, which is the trade `auto` can only take at its two extremes.
+    ///
+    /// Covering outright is cheap? Take it — bars nobody needed look worse than a crop
+    /// nobody notices. Otherwise split the difference exactly: at `1/√fill` both
+    /// fractions come out at `√fill`, so a 16:9 clip on a 32:9 display keeps 71% of the
+    /// frame *and* covers 71% of the display, instead of choosing which half to lose.
+    static func zoom(_ mode: FillMode, video: CGSize?, in bounds: CGSize) -> CGFloat {
+        guard mode == .smart, let video else { return 1 }
+        let fill = visibleFraction(video: video, in: bounds)
+        guard fill < autoFillThreshold else { return 1 / fill }
+        return 1 / fill.squareRoot()
     }
 
     /// Pixel dimensions as displayed — `naturalSize` alone is wrong for rotated recordings.

@@ -27,6 +27,12 @@ struct LockScreenConfig: Codable {
 }
 
 enum LockScreenLibrary {
+    /// The saver reads this config once, when *WallpaperAgent* decides to build its
+    /// view — which can be hours ago. Without a nudge, changing the scaling or the
+    /// speed writes a file nobody re-reads and nothing moves on screen. Every writer
+    /// below posts it, so there is one path and no way to forget it.
+    static let changedNotification = Notification.Name("com.personal.W4llsky.lockScreenConfigChanged")
+
     static var folder: URL {
         realHome.appendingPathComponent("Library/Application Support/W4llsky", isDirectory: true)
     }
@@ -59,6 +65,7 @@ enum LockScreenLibrary {
     static func save(_ config: LockScreenConfig) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try JSONEncoder().encode(config).write(to: configURL, options: .atomic)
+        postChanged()
     }
 
     static func install(video source: URL, rate: Float, fillMode: FillMode) throws {
@@ -78,6 +85,14 @@ enum LockScreenLibrary {
     static func clear() {
         try? FileManager.default.removeItem(at: videoURL)
         try? FileManager.default.removeItem(at: configURL)
+        postChanged()
+    }
+
+    /// Distributed, because the reader is another process (the sandboxed saver host).
+    private static func postChanged() {
+        DistributedNotificationCenter.default().postNotificationName(
+            changedNotification, object: nil, userInfo: nil, deliverImmediately: true
+        )
     }
 
     private static var realHome: URL {

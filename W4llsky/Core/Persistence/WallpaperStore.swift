@@ -12,7 +12,7 @@ import Foundation
 struct WallpaperAssignment: Codable, Equatable {
     var bookmarkData: Data
     var videoName: String
-    var fillMode: FillMode = .auto
+    var fillMode: FillMode = .fill
 }
 
 struct WallpaperConfiguration: Codable {

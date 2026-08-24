@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             })
         }
+        ScreenSaverInstaller.installIfOutdated()
         SystemScreenSaver.removeRedundantScreenSaverSelection()
         reconcile(displayObserver.current)
 

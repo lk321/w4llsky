@@ -334,7 +334,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
 
-        let fillMode = store.configuration.assignments[displayID]?.fillMode ?? .auto
+        let fillMode = store.configuration.assignments[displayID]?.fillMode ?? .fill
         store.configuration.assignments[displayID] = WallpaperAssignment(
             bookmarkData: bookmark,
             videoName: url.lastPathComponent,
@@ -360,16 +360,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func setFillMode(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? ScalingChoice else { return }
 
-        guard let displayID = choice.displayID else {
-            guard var config = LockScreenLibrary.load() else { return }
-            config.fillMode = choice.mode
-            do { try LockScreenLibrary.save(config) } catch { report(error.localizedDescription) }
-            return
+        if let displayID = choice.displayID {
+            store.configuration.assignments[displayID]?.fillMode = choice.mode
+            store.save()
+            engine.setFillMode(choice.mode, displayID: displayID)
+            // An assigned display with no window of ours is one macOS is drawing itself,
+            // from the same file — so the pixels come from the saver, and the mode has to
+            // reach LockScreenLibrary or the menu changes nothing anyone can see.
+            guard !engine.hasWindow(for: displayID) else { return }
         }
 
-        store.configuration.assignments[displayID]?.fillMode = choice.mode
-        store.save()
-        engine.setFillMode(choice.mode, displayID: displayID)
+        guard var config = LockScreenLibrary.load() else { return }
+        config.fillMode = choice.mode
+        do { try LockScreenLibrary.save(config) } catch { report(error.localizedDescription) }
     }
 
     @objc private func setSpeed(_ sender: NSMenuItem) {
@@ -387,7 +390,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func chooseLockScreenVideo() {
         guard let url = pickVideoURL(message: "Choose a video for the Lock Screen saver") else { return }
 
-        let fillMode = LockScreenLibrary.load()?.fillMode ?? .auto
+        let fillMode = LockScreenLibrary.load()?.fillMode ?? .fill
         do {
             try LockScreenLibrary.install(video: url, rate: store.configuration.playbackRate, fillMode: fillMode)
             try enableScreenSaver()

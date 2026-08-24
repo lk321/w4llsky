@@ -117,9 +117,18 @@ resolution on a Retina display, and an un-synced frame animates into place over 
 every resolution change.
 
 `FillMode` (per display, and one for the lock screen) picks the gravity:
-`.fill` crops, `.fit` letterboxes, and the default `.auto` computes how much of the frame
-an aspect-fill would keep (`VideoPresentation.visibleFraction`) and letterboxes below 85%.
-That's what stops a 16:9 clip from losing half its frame on a 5120×1440 ultrawide. When it
+`.fill` crops, `.fit` letterboxes, `.auto` computes how much of the frame an aspect-fill
+would keep (`VideoPresentation.visibleFraction`) and letterboxes below 85%, and `.smart`
+is the one that isn't a gravity at all. **The default is `.fill`** — auto's letterbox on a
+wide display reads as a bug ("why is my wallpaper in a box?"), not as a considered choice.
+
+`.smart` draws the video layer *larger than the view* (`VideoPresentation.zoom`,
+`WallpaperContentView.videoZoom`, root layer masked) with `.resizeAspect` gravity, which
+buys every crop between fit and fill instead of just the two ends. Aspect-fit at zoom `z`
+keeps `1/z` of the frame and covers `z · fill` of the display; `z = 1/√fill` makes both
+`√fill`, so a 16:9 clip on a 32:9 display keeps 71% *and* covers 71%. Above the 85%
+threshold it just takes the full cover (`z = 1/fill`, geometrically identical to
+aspect-fill) — bars nobody needed look worse than a crop nobody notices. When it
 letterboxes, the bars are filled with one blurred still frame of the video — generated once
 via `AVAssetImageGenerator` + Core Image, then static, so there is no second decode
 pipeline. The decision is re-run on every reposition, since a resolution change can flip it.
@@ -272,6 +281,24 @@ whatever locks the Mac — so the menu hides the screen-saver items (hot key, ho
 `W4llskySaverView` builds its `WallpaperPlayer` in `syncPlayback()`, not in `init`, and
 drops it whenever the view stops animating or leaves its window. Setting the rate to 0
 is not enough: only releasing the player frees the decoder.
+
+It also read `LockScreenConfig` exactly once, in `init` — and *WallpaperAgent* decides when
+that happens, which can be hours before the user picks a different scaling. So every
+scaling and speed change wrote a file nobody re-read and nothing moved on screen; that is
+the whole of the "the scaling doesn't work" bug, and no amount of correct gravity math
+fixes it. `LockScreenLibrary.save`/`clear` now post `changedNotification` (distributed —
+the reader is another process), and the saver re-reads, applying the mode and rate to the
+running pipeline, rebuilding only when the file itself changed. Verified from outside the
+sandbox: the appex closes and reopens `LockScreen.mp4` (`lsof`) on the notification alone.
+
+Two matching gaps on the app side. `MenuBarController.setFillMode` sent a display's mode
+only to `WallpaperEngine`, which has no player for a display macOS is drawing itself, so
+the menu item did nothing at all in exactly the setup the lock screen wants — it now falls
+through to `LockScreenLibrary` when the display has no window of ours. And the installed
+`.saver` is a *copy*: `ScreenSaverInstaller.installIfOutdated()` (called at launch)
+refreshes it when the app's bundled one is newer, or every future build ships saver code
+the lock screen never runs. The running `legacyScreenSaver` still has the old bundle
+mapped, so it picks the new code up when WallpaperAgent next respawns it.
 
 ### Who draws what, and why it matters for CPU
 

@@ -44,6 +44,25 @@ final class W4llskySaverView: ScreenSaverView {
             name: .init("com.apple.screenIsLocked"), object: nil,
             suspensionBehavior: .deliverImmediately
         )
+
+        // WallpaperAgent decides when this view is built, and that can be hours before
+        // the user picks a different scaling in the menu. Without this the config read
+        // above is the only one that ever happens, so every change in the menu wrote a
+        // file nobody re-read — the scaling looked broken because nothing applied it.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(configChanged),
+            name: LockScreenLibrary.changedNotification, object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+    }
+
+    @objc private func configChanged() {
+        let updated = LockScreenLibrary.load()
+        // Scaling and speed apply to the running pipeline; a different file needs a new
+        // one, and so does the video being removed.
+        if updated?.videoName != config?.videoName { teardown() }
+        config = updated
+        syncPlayback()
     }
 
     deinit {
@@ -101,6 +120,7 @@ final class W4llskySaverView: ScreenSaverView {
             player.updatePresentation()
             self.player = player
         }
+        player?.setFillMode(config.fillMode) // may have changed under an existing player
         player?.setRate(config.rate)
     }
 

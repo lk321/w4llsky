@@ -69,6 +69,36 @@ final class W4llskyTests: XCTestCase {
         XCTAssertEqual(VideoPresentation.gravity(.fit, video: ultrawide, in: ultrawide), .resizeAspect)
     }
 
+    /// `.smart` on a mismatch auto would letterbox: equal parts crop and blurred bar,
+    /// rather than all of one or all of the other.
+    func testSmartSplitsTheDifference() {
+        let zoom = VideoPresentation.zoom(.smart, video: sixteenNine, in: ultrawide)
+        let fill = VideoPresentation.visibleFraction(video: sixteenNine, in: ultrawide)
+        let kept = 1 / zoom          // fraction of the frame still on screen
+        let covered = zoom * fill    // fraction of the display the video reaches
+        XCTAssertEqual(kept, covered, accuracy: 0.001)
+        XCTAssertEqual(kept, 0.707, accuracy: 0.001) // √0.5 — better than either extreme
+        XCTAssertGreaterThan(kept, fill)             // crops less than Fill
+        XCTAssertGreaterThan(covered, fill)          // covers more than Fit
+    }
+
+    func testSmartCoversTheDisplayWhenThatCostsLessThanTheThreshold() {
+        let sixteenTen = CGSize(width: 2560, height: 1600)
+        let fill = VideoPresentation.visibleFraction(video: sixteenNine, in: sixteenTen)
+        // Exactly the aspect-fill zoom: full cover, and nothing for a backdrop to fill.
+        XCTAssertEqual(VideoPresentation.zoom(.smart, video: sixteenNine, in: sixteenTen), 1 / fill, accuracy: 0.001)
+        XCTAssertEqual(VideoPresentation.zoom(.smart, video: ultrawide, in: ultrawide), 1, accuracy: 0.001)
+    }
+
+    func testOnlySmartZooms() {
+        for mode in FillMode.allCases where mode != .smart {
+            XCTAssertEqual(VideoPresentation.zoom(mode, video: sixteenNine, in: ultrawide), 1, "\(mode)")
+        }
+        // Until the track size is known there is nothing to compute from: fill, no zoom.
+        XCTAssertEqual(VideoPresentation.zoom(.smart, video: nil, in: ultrawide), 1)
+        XCTAssertEqual(VideoPresentation.gravity(.smart, video: nil, in: ultrawide), .resizeAspectFill)
+    }
+
     func testLockScreenPathsSitOutsideTheSandboxContainer() {
         // The screen saver resolves these from its own (sandboxed) process; if this
         // ever starts pointing at a container, the saver silently plays nothing.

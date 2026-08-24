@@ -16,12 +16,19 @@ final class WallpaperContentView: NSView {
     let videoLayer: AVPlayerLayer
     let backdropLayer = CALayer()
 
+    /// > 1 draws the video layer larger than the view, which crops it — see
+    /// `VideoPresentation.zoom`. The root layer masks, so nothing spills out.
+    var videoZoom: CGFloat = 1 {
+        didSet { if videoZoom != oldValue { syncLayers() } }
+    }
+
     init(videoLayer: AVPlayerLayer) {
         self.videoLayer = videoLayer
         super.init(frame: .zero)
 
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
+        layer?.masksToBounds = true
 
         backdropLayer.contentsGravity = .resizeAspectFill
         backdropLayer.masksToBounds = true
@@ -56,9 +63,15 @@ final class WallpaperContentView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for sublayer in [backdropLayer, videoLayer as CALayer] {
-            sublayer.frame = bounds
             sublayer.contentsScale = scale
         }
+        backdropLayer.frame = bounds
+        // Negative insets: the layer grows around the view's centre, so the crop is
+        // centred like every other gravity here.
+        videoLayer.frame = bounds.insetBy(
+            dx: bounds.width * (1 - videoZoom) / 2,
+            dy: bounds.height * (1 - videoZoom) / 2
+        )
         CATransaction.commit()
     }
 }

@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Deployment target is macOS 26.5 — the runner needs the matching SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ad-hoc signature ("-"): no Developer ID secret needed, and the embedded
+      # W4llsky.saver still loads. Users clear the quarantine flag themselves.
+      - name: Build
+        run: |
+          xcodebuild -project W4llsky.xcodeproj -scheme W4llsky \
+            -configuration Release -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Zip
+        run: ditto -c -k --keepParent --sequesterRsrc build/Build/Products/Release/W4llsky.app W4llsky.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: W4llsky
+          path: W4llsky.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" W4llsky.zip --generate-notes

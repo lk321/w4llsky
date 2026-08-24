@@ -27,6 +27,22 @@ enum ScreenSaverInstaller {
         FileManager.default.fileExists(atPath: installedURL.path)
     }
 
+    /// The installed bundle is a *copy*, so a new build of the app ships saver code that
+    /// nothing would otherwise pick up — the lock screen would keep running whatever was
+    /// copied out months ago. Info.plist rather than the executable: it is always there
+    /// under a fixed name, and `copyItem` preserves its mtime.
+    static func installIfOutdated() {
+        guard isInstalled, let source = bundledURL,
+              let ours = modified(source), let installed = modified(installedURL),
+              ours > installed else { return }
+        try? install()
+    }
+
+    private static func modified(_ bundle: URL) -> Date? {
+        let plist = bundle.appendingPathComponent("Contents/Info.plist")
+        return try? plist.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
     static func install() throws {
         guard let source = bundledURL else {
             throw error("The screen saver plug-in is missing from this build of W4llsky.")
