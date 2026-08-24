@@ -213,6 +213,66 @@ whose configuration names an asset in the root-owned `com.apple.idleassetsd` cat
 (`/Library/Application Support/com.apple.idleassetsd/Aerial.sqlite`) — adding to it needs
 admin rights, which our own `.saver` avoids entirely.
 
+### The lock screen's shield kills the video surface
+
+Locking does not restart the saver — the view is never rebuilt — but the video stops
+reaching the screen anyway. The shield takes the display's surface out from under the
+`AVPlayerLayer`, and nothing in AVFoundation notices: `figlayersync_setLayerTiming` keeps
+running once a second while CoreMedia reports `enqueued: 18, displayed: 0`. It is the
+same failure as display sleep, from a different cause.
+
+Left alone it heals only when `AVPlayerLooper` reaches the end of the clip:
+
+```
+20:07:19.778  figPlaybackBoss_MentorStopping: all mentors are now idle
+20:07:19.778  playerfig_shouldBeginGaplessTransition: YES, because there is a next item
+20:07:19.779  FigVideoReceiverForCALayerCommonCreateFigImageQueue: creating…
+```
+
+That is why the delay looked random and why the video sometimes "never moved": it is
+however long is left in the clip. Measured on a 22s video, one lock went dark for 5.2s
+and did not reach full rate for 12s.
+
+`WallpaperPlayer.restartLoop()` asks for that transition immediately —
+`advanceToNextItem()`, which is the same call the looper makes itself — driven from
+`com.apple.screenIsLocked` in `W4llskySaverView`, 0.4s late because the notification is
+sent while the shield is still going up. Measured after: the six-second window beginning
+at the lock shows 144 of 144 frames displayed, twice, at two different points in the clip.
+
+Do **not** use `reattach()` here, the display-sleep fix. Detaching and re-attaching the
+layer leaves the orphaned image queues decoding into nothing and comes back *slower*
+(measured 8s versus 5s, with three live contexts afterwards).
+
+Two side notes from the same investigation: WallpaperAgent asks for a still snapshot of
+the wallpaper on every lock and every one fails — `Failed to create snapshot to export`,
+twelve times in one lock — because an `AVPlayerLayer` renders nothing into a bitmap
+context. And macOS stops a wallpaper it cannot see *completely*: with the desktop covered
+by ordinary windows the saver's decode pipelines drop to zero, whoever is covering it.
+
+### One choice, one slot
+
+WallpaperAgent builds and animates a live wallpaper for **every** slot our saver is
+chosen for. Selecting it as both the screen saver (`Idle`) and the wallpaper (`Desktop`)
+therefore ran two 4K decode pipelines against each other, only one of them on screen,
+and every wallpaper rebuild — locking, changing the video — added more. That is what a
+"the video takes ages to appear and sometimes never moves" report looks like: the copy
+you can see is starving.
+
+The spares cannot be detected from inside the saver. Probed side by side they are
+identical: same window class (`NSServiceViewControllerWindow`), same frame, same alpha,
+`isVisible` true for both, `occlusionState` never reporting visible for either (the
+windows belong to WallpaperAgent, so `didChangeOcclusionStateNotification` never arrives
+in the appex), and `stopAnimation()` is never called on the spare. So the duplicate is
+prevented instead: `SystemScreenSaver.useAsDesktopWallpaper(true)` empties the `Idle`
+slot, and `removeRedundantScreenSaverSelection()` re-checks that pairing at launch.
+Nothing is lost — with the video as the wallpaper the lock screen already draws it,
+whatever locks the Mac — so the menu hides the screen-saver items (hot key, hot corner,
+"Starts After") while that mode is on rather than leaving switches that do nothing.
+
+`W4llskySaverView` builds its `WallpaperPlayer` in `syncPlayback()`, not in `init`, and
+drops it whenever the view stops animating or leaves its window. Setting the rate to 0
+is not enough: only releasing the player frees the decoder.
+
 ### Who draws what, and why it matters for CPU
 
 There is no separate lock-screen content: WallpaperKit only has `contentType: desktop`
@@ -230,7 +290,9 @@ worse: our window *covers* the system's copy, which macOS then throttles to ~1.5
 and has to spin it back up to 30 fps in front of the user — which is exactly what a
 "the wallpaper stutters for the first two seconds after locking" report looks like. If a
 display is deliberately given a *different* video, our window stays and so does that
-cost; that is inherent, not a bug.
+cost; that is inherent, not a bug. Note how far macOS takes it: with our window covering
+the system wallpaper completely, its decode pipelines drop to **zero**, so locking has to
+cold-start a 4K decoder in front of the user. The menu says so next to the video name.
 
 For the windows we do draw, `WallpaperEngine` observes
 `NSWindow.didChangeOcclusionStateNotification` and stops the player when the window is

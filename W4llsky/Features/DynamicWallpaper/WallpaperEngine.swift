@@ -92,7 +92,7 @@ final class WallpaperEngine {
     /// Waking from display or system sleep leaves the video layers detached.
     func handleWake() {
         for (id, player) in players {
-            player.reattachAfterWake()
+            player.reattach()
             windows[id]?.orderFront(nil)
             // Re-derive rather than restore: the occluding window may well have gone
             // away while the display slept, and a stopped wallpaper must never be able

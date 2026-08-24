@@ -71,16 +71,29 @@ final class WallpaperPlayer {
         }
     }
 
-    /// After the display sleeps, the player keeps producing frames but they stop
-    /// reaching the screen (CoreMedia reports "enqueued: 12, displayed: 0") — the
-    /// layer has lost its surface, and the window looks empty, so the desktop picture
-    /// shows through again. Re-attaching the player to the layer rebuilds it; the rate
-    /// KVO never fires for this because the player never stopped.
-    func reattachAfterWake() {
+    /// Rebuilds the layer's video surface.
+    ///
+    /// Two things take it away: the display going to sleep, and the lock screen's shield
+    /// taking over the display. In both cases the player keeps decoding into nothing —
+    /// CoreMedia reports "enqueued: 12, displayed: 0" — and no rate KVO can catch it,
+    /// because playback never stopped. Left alone it only heals when `AVPlayerLooper`
+    /// reaches the end of the clip and its gapless transition builds a fresh image queue,
+    /// which is why the lock screen took anywhere from two seconds to a whole loop to
+    /// start moving. Re-attaching the player forces that new queue immediately.
+    func reattach() {
         let layer = view.videoLayer
         layer.player = nil
         layer.player = queuePlayer
         updatePresentation()
+        setRate(desiredRate)
+    }
+
+    /// Asks `AVPlayerLooper` for its gapless transition now, instead of waiting for the
+    /// end of the clip. Detaching the layer is the wrong tool for the lock screen: it
+    /// leaves the orphaned image queues decoding and takes longer to come back (measured
+    /// 8s vs 5s). The transition is what was actually observed rebuilding the surface.
+    func restartLoop() {
+        queuePlayer.advanceToNextItem()
         setRate(desiredRate)
     }
 

@@ -72,14 +72,15 @@ enum SystemScreenSaver {
         stopAgent()
     }
 
-    static func replacingChoices(in node: [String: Any], slot: String, with choice: [String: Any]) -> [String: Any] {
+    /// A nil `choice` empties the slot, which is how we hand it back to macOS.
+    static func replacingChoices(in node: [String: Any], slot: String, with choice: [String: Any]?) -> [String: Any] {
         var result = node
         for (key, value) in node {
             guard let child = value as? [String: Any] else { continue }
             if key == slot, let content = child["Content"] as? [String: Any] {
                 var idle = child
                 var updated = content
-                updated["Choices"] = [choice]
+                updated["Choices"] = choice.map { [$0] } ?? []
                 // A wallpaper slot carries options for the provider it used to hold;
                 // leaving them behind makes WallpaperAgent decode them for the new one.
                 updated["EncodedOptionValues"] = "$null"
@@ -215,12 +216,33 @@ enum SystemScreenSaver {
             choice = previous
         }
 
-        try write(replacingChoices(in: store, slot: desktopSlot, with: choice))
+        var updated = replacingChoices(in: store, slot: desktopSlot, with: choice)
+        updated = replacingChoices(in: updated, slot: idleSlot,
+                                   with: enabled ? nil : saverChoice(bundlePath: bundlePath))
+        try write(updated)
 
         guard isDesktopWallpaper == enabled else {
             throw failure("macOS didn't accept the change.")
         }
         if !enabled { UserDefaults.standard.removeObject(forKey: previousWallpaperKey) }
+    }
+
+    /// One choice, one slot.
+    ///
+    /// WallpaperAgent builds a live wallpaper for *every* slot our saver is chosen for and
+    /// animates all of them — two identical 4K decode pipelines here, only one of which is
+    /// ever on screen. They cannot be told apart from inside the saver: same window class
+    /// (`NSServiceViewControllerWindow`), same frame, same alpha, same occlusion state,
+    /// and `stopAnimation()` is never called on the spare. So the duplicate has to be
+    /// prevented rather than detected, and the screen-saver slot is the one to give up:
+    /// with the video set as the wallpaper the lock screen already draws it, whatever
+    /// starts the lock.
+    ///
+    /// Called at launch as well, because the two settings are written at different times
+    /// and only this pairing is a state the app should ever leave behind.
+    static func removeRedundantScreenSaverSelection() {
+        guard isDesktopWallpaper, isSelected, let store = loadStore() else { return }
+        try? write(replacingChoices(in: store, slot: idleSlot, with: nil))
     }
 
     // MARK: - Store reading

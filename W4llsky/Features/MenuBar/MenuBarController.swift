@@ -84,11 +84,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let open = NSMenuItem(title: "Open W4llsky", action: #selector(openMainWindow), keyEquivalent: "")
-        open.target = self
-        menu.addItem(open)
+        let about = NSMenuItem(title: "About W4llsky", action: #selector(openAboutWindow), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
 
-        menu.addItem(NSMenuItem(title: "Quit W4llsky", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        // Our own selector rather than `terminate:`: macOS 26 recognises the standard
+        // one and draws a symbol next to it, which is the only icon in a menu that has
+        // none anywhere else.
+        let quit = NSMenuItem(title: "Quit W4llsky", action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
     }
 
     private func buildDisplaysMenu() -> NSMenu {
@@ -203,6 +208,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let lock = LockScreenLibrary.load()
 
         menu.addItem(infoItem(lock.map { "   \($0.videoName)" } ?? "No video set"))
+        if lock != nil, SystemScreenSaver.isDesktopWallpaper, differsFromDesktopVideo {
+            // macOS stops a wallpaper it can't see at all — measured: zero decode
+            // pipelines while our own window covers it — so locking has to cold-start a
+            // 4K decoder in front of the user. Matching the two videos is the fix, and
+            // the menu is where they'd notice.
+            menu.addItem(infoItem("   ⚠︎ Differs from the desktop video — starts cold"))
+        }
 
         let choose = NSMenuItem(
             title: lock == nil ? "Choose Video…" : "Change Video…",
@@ -225,9 +237,30 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        // macOS has no public way to draw on the lock screen; the supported path is
-        // a screen saver, which has to be installed *and* selected system-wide.
-        // Both states are read back from the system, never assumed.
+        // The one item that matters: macOS 26 draws the lock screen from the desktop
+        // wallpaper, so this is what actually puts the video there — whatever locks
+        // the Mac, and with nothing else switched on.
+        let onLockScreen = NSMenuItem(
+            title: "Play on the Lock Screen",
+            action: #selector(toggleDesktopWallpaper), keyEquivalent: ""
+        )
+        onLockScreen.target = self
+        onLockScreen.state = SystemScreenSaver.isDesktopWallpaper ? .on : .off
+        menu.addItem(onLockScreen)
+
+        // Everything below is the screen-saver fallback, and it is genuinely inert while
+        // the video is the wallpaper — worse than inert, since a saver selected in both
+        // slots makes macOS run two copies of it. Hide it rather than leave switches that
+        // do nothing.
+        guard !SystemScreenSaver.isDesktopWallpaper else {
+            let settings = NSMenuItem(title: "Open Wallpaper Settings…", action: #selector(openScreenSaverSettings), keyEquivalent: "")
+            settings.target = self
+            menu.addItem(settings)
+            return menu
+        }
+
+        menu.addItem(.separator())
+
         let installed = ScreenSaverInstaller.isInstalled
         let selected = SystemScreenSaver.isSelected
         menu.addItem(infoItem(installed ? "Screen saver: installed" : "Screen saver: not installed"))
@@ -254,17 +287,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         hotKey.state = store.configuration.usesLockHotKey ? .on : .off
         menu.addItem(hotKey)
 
-        // The one route that survives locking the Mac any way at all — macOS 26 draws
-        // the lock screen from the desktop wallpaper, so this is what W4llsky is
-        // really for. The two below only matter if this is off.
-        let onLockScreen = NSMenuItem(
-            title: "Play on the Lock Screen",
-            action: #selector(toggleDesktopWallpaper), keyEquivalent: ""
-        )
-        onLockScreen.target = self
-        onLockScreen.state = SystemScreenSaver.isDesktopWallpaper ? .on : .off
-        menu.addItem(onLockScreen)
-
         menu.addItem(submenuItem(title: "Hot Corner Plays the Video", submenu: buildHotCornerMenu()))
 
         let test = NSMenuItem(title: "Play Now (locks the Mac)", action: #selector(testScreenSaver), keyEquivalent: "")
@@ -276,6 +298,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(settings)
 
         return menu
+    }
+
+    /// True when no connected display plays the same file the system wallpaper does, so
+    /// W4llsky's own window is covering it and macOS has stopped it.
+    private var differsFromDesktopVideo: Bool {
+        let assigned = displayObserver.current.compactMap { store.configuration.assignments[$0.id] }
+        guard !assigned.isEmpty else { return false }
+        return !assigned.contains { assignment in
+            SecurityScopedBookmark.resolve(assignment.bookmarkData).map(LockScreenLibrary.isSameFile(as:)) ?? false
+        }
     }
 
     private func submenuItem(title: String, submenu: NSMenu) -> NSMenuItem {
@@ -411,7 +443,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleDesktopWallpaper() {
         let enable = !SystemScreenSaver.isDesktopWallpaper
         do {
-            if enable { try enableScreenSaver() }
+            // Only *installed*, deliberately not selected as the screen saver: being
+            // chosen in both slots is what makes macOS run two copies of the video.
+            if enable, !ScreenSaverInstaller.isInstalled { try ScreenSaverInstaller.install() }
             try SystemScreenSaver.useAsDesktopWallpaper(enable, bundlePath: ScreenSaverInstaller.installedURL)
         } catch {
             report(enable ? "Couldn't put the video on the lock screen."
@@ -473,7 +507,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         LaunchAtLogin.toggle()
     }
 
-    @objc private func openMainWindow() {
+    @objc private func quit() {
+        NSApp.terminate(nil)
+    }
+
+    @objc private func openAboutWindow() {
         NSApp.activate(ignoringOtherApps: true)
 
         if let mainWindow {
@@ -481,14 +519,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
 
+        let content = NSHostingView(rootView: ContentView())
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
+            contentRect: NSRect(origin: .zero, size: content.fittingSize),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "W4llsky"
-        window.contentView = NSHostingView(rootView: ContentView())
+        window.title = "About W4llsky"
+        window.contentView = content
         window.isReleasedWhenClosed = false
         window.center()
         mainWindow = window

@@ -7,8 +7,20 @@
 //
 
 import AVFoundation
+import SwiftUI
 import XCTest
 @testable import W4llsky
+
+/// The About window sizes itself from its content, so a layout that reports nothing
+/// would open as a title bar with a sliver under it — the app's only window, broken.
+final class AboutWindowTests: XCTestCase {
+    @MainActor
+    func testAboutContentReportsARealSize() {
+        let size = NSHostingView(rootView: ContentView()).fittingSize
+        XCTAssertEqual(size.width, 320, accuracy: 1) // the width the layout pins
+        XCTAssertGreaterThan(size.height, 150)       // grows with the version and author lines
+    }
+}
 
 final class W4llskyTests: XCTestCase {
 

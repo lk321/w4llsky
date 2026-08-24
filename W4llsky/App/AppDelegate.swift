@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             })
         }
+        SystemScreenSaver.removeRedundantScreenSaverSelection()
         reconcile(displayObserver.current)
 
         menuBar = MenuBarController(engine: engine, store: store, displayObserver: displayObserver)
