@@ -22,6 +22,26 @@ final class AboutWindowTests: XCTestCase {
     }
 }
 
+/// A wallpaper that keeps decoding while nobody can see it is the whole idle cost of
+/// this app, once per display. Occlusion only catches one of the three ways that
+/// happens — sleep and the lock screen's shield both leave the window "visible".
+final class WallpaperRateTests: XCTestCase {
+    func testVisibleWallpaperPlaysAtItsRate() {
+        XCTAssertEqual(WallpaperEngine.rate(1.5, paused: false, suspended: false, visible: true), 1.5)
+    }
+
+    func testEveryReasonToStopStopsIt() {
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: false, visible: true), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: true, visible: true), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: false, visible: false), 0)
+    }
+
+    /// Sleeping while covered must not come back playing just because it got uncovered.
+    func testReasonsToStopDontCancelOut() {
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: true, visible: false), 0)
+    }
+}
+
 final class W4llskyTests: XCTestCase {
 
     private let ultrawide = CGSize(width: 5120, height: 1440)

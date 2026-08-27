@@ -92,7 +92,9 @@ in `WallpaperEngine`'s two dictionaries keyed by a **persistent display id**
 sleep/wake/reconnect). `AppDelegate` reconciles `WallpaperEngine` against
 `DisplayObserver.current` on every `NSApplication.didChangeScreenParametersNotification`
 (connect/disconnect/resolution/scale/main-display/arrangement/mirroring all funnel through
-this one notification) — create windows for newly-connected displays with a saved
+this one notification; it arrives in bursts, and mostly with nothing changed, so
+`DisplayObserver` drops a refresh whose snapshots are `==` the last ones rather than
+driving a reconcile per notification) — create windows for newly-connected displays with a saved
 assignment, reposition existing ones, tear down windows for displays that vanished.
 `NSScreen` references are never cached; always re-resolved via `DisplayObserver.screen(forID:)`.
 
@@ -313,7 +315,13 @@ and a display's assignment, `AppDelegate.reconcile` skips creating our own
 `fileResourceIdentifierKey` — `install` hard-links the source, so paths differ but the
 inode does not). Drawing our own copy over the system's would decode the file twice, and
 worse: our window *covers* the system's copy, which macOS then throttles to ~1.5 fps
-(measured: `enqueued: 8, displayed: 0`). The lock screen inherits that throttled pipeline
+(measured: `enqueued: 8, displayed: 0`).
+
+**Don't count on that throttle, though.** Measured again since, with a full-screen
+desktop-level window completely covering the system wallpaper: `legacyScreenSaver` went
+from 6.5% to 7.7% — *up*, not to zero — and `isOpaque` made no difference (7.7% either
+way). So a display deliberately given a different video really does pay both pipelines,
+~8.6% for that display alone. The lock screen inherits that throttled pipeline
 and has to spin it back up to 30 fps in front of the user — which is exactly what a
 "the wallpaper stutters for the first two seconds after locking" report looks like. If a
 display is deliberately given a *different* video, our window stays and so does that
@@ -325,7 +333,30 @@ For the windows we do draw, `WallpaperEngine` observes
 `NSWindow.didChangeOcclusionStateNotification` and stops the player when the window is
 not `.visible`. Note AppKit only reports occlusion when the window is *fully* covered by
 opaque windows, so a scattered desktop keeps playing (correctly — you can see it) and a
-full-screen app stops it. Every path that can leave a player stopped re-derives the rate
+full-screen app stops it.
+
+Occlusion catches only one of the three ways a wallpaper stops being watchable. It never
+fires for **display sleep** or for the **lock screen's shield**: nothing is covering our
+window, so AppKit still calls it visible while the surface underneath the `AVPlayerLayer`
+is gone. The player never notices either (that is the same blindness `reattach()` and
+`restartLoop()` exist to work around) and keeps decoding at full rate into nothing, once
+per display, for as long as the Mac stays asleep or locked — which for a docked machine
+is a large part of the day, though it is idle cost only: it buys nothing back while the
+Mac is in use. `WallpaperEngine.setSuspended(_:)` is the gate for both, driven from
+`NSWorkspace.screensDidSleep`/`willSleep` and the distributed `com.apple.screenIsLocked` /
+`…IsUnlocked`. Coming *out* of suspension routes through `handleWake()`, since the surface
+has to be rebuilt on that edge anyway. It folds into `rate(for:)` alongside pause and
+occlusion — `WallpaperEngine.rate(_:paused:suspended:visible:)` is that decision, pure and
+tested, because "any one reason is enough to stop" is exactly the logic that rots into a
+wallpaper stuck at rate 0.
+
+Measured on an M1 Pro, one 4K H.264 wallpaper costs **~2.1% CPU** in our own
+`DesktopWindow` (43 MB RSS), and repeated `reattach()` does *not* stack decode contexts —
+20 cycles left CPU and RSS flat, so the wake path is not a leak. The same video as the
+**system** wallpaper costs **~6.5%** in `legacyScreenSaver`, roughly 3× more. If
+WallpaperAgent builds one live wallpaper per active display+space, that is the number
+that multiplies with monitor count — *unverified above one display*, and worth measuring
+before any design leans on it (`pgrep -f legacyScreenSaver | wc -l` while docked). Every path that can leave a player stopped re-derives the rate
 from `rate(for:)` rather than restoring the last one — `handleWake`, `reposition` — so a
 paused wallpaper can never stay paused just because nothing else happened to move.
 

@@ -31,9 +31,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    // Unconditionally, *not* via setSuspended(false): a wake can arrive
+                    // with nothing suspended — an unlock that beat it to clearing the
+                    // flag, or a KVM/monitor input switch with no sleep notification at
+                    // all — and skipping the re-attach there is the "wallpaper reverted
+                    // to the desktop picture" bug this observer exists to prevent.
                     self.engine.handleWake()
                     self.reconcile(self.displayObserver.current)
                 }
+            })
+        }
+
+        // The mirror image, and the one nothing was doing: while the displays sleep the
+        // players keep decoding at full rate into a surface that no longer exists. One
+        // pipeline per display, for as long as the Mac is asleep.
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
+            wakeTokens.append(NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.engine.setSuspended(true) }
+            })
+        }
+
+        // Same waste, different cause: the lock screen's shield takes the surface too,
+        // and occlusion never reports it — nothing is *covering* our window, so AppKit
+        // still calls it visible. These two are distributed notifications; loginwindow
+        // is another process.
+        for (name, suspended) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
+            wakeTokens.append(DistributedNotificationCenter.default().addObserver(
+                forName: Notification.Name(name), object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.engine.setSuspended(suspended) }
             })
         }
         ScreenSaverInstaller.installIfOutdated()
@@ -77,8 +105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // seconds of the lock screen was our own window's fault.
         let systemDrawsWallpaper = SystemScreenSaver.isDesktopWallpaper
 
+        // Resolved once instead of per display: `screen(forID:)` maps *every* NSScreen
+        // through CGDisplayCreateUUIDFromDisplayID and `localizedName` to find one, so
+        // calling it in this loop is N² IOKit round-trips per screen-parameters change.
+        let screens = Dictionary(
+            NSScreen.screens.map { (DisplaySnapshotFactory.snapshot(for: $0).id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
         for snapshot in snapshots {
-            guard let screen = displayObserver.screen(forID: snapshot.id) else { continue }
+            guard let screen = screens[snapshot.id] else { continue }
             let assignment = store.configuration.assignments[snapshot.id]
 
             if let assignment, systemDrawsWallpaper, systemPlays(assignment) {

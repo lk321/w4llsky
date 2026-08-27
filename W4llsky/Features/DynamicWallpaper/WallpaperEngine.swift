@@ -13,6 +13,14 @@ final class WallpaperEngine {
     private var windows: [String: DesktopWindow] = [:]
     private var players: [String: WallpaperPlayer] = [:]
     private var isPaused = false
+    /// Set while the displays are asleep or the screen is locked. Occlusion can't see
+    /// either one: nothing covers our window, so AppKit still calls it visible while
+    /// the shield (or a sleeping display) has taken the surface out from under the
+    /// AVPlayerLayer. The player never notices and keeps decoding at full rate into
+    /// nothing — CoreMedia reports "enqueued: 12, displayed: 0" — once per display,
+    /// for as long as the Mac stays locked. Pure waste, and it scales with monitor
+    /// count; it is idle cost only, so it buys nothing back while the Mac is in use.
+    private var isSuspended = false
     private var rate: Float = 1
     private var occlusionToken: NSObjectProtocol?
 
@@ -41,9 +49,19 @@ final class WallpaperEngine {
         windows[displayID] != nil
     }
 
+    /// Every reason a wallpaper must not be decoding, in one place. Pure so the
+    /// combinations can be checked without a display attached.
+    static func rate(_ rate: Float, paused: Bool, suspended: Bool, visible: Bool) -> Float {
+        paused || suspended || !visible ? 0 : rate
+    }
+
     private func rate(for displayID: String) -> Float {
-        guard !isPaused, windows[displayID]?.occlusionState.contains(.visible) == true else { return 0 }
-        return rate
+        Self.rate(
+            rate,
+            paused: isPaused,
+            suspended: isSuspended,
+            visible: windows[displayID]?.occlusionState.contains(.visible) == true
+        )
     }
 
     func assign(bookmark: Data, rate: Float, fillMode: FillMode, to screen: NSScreen, displayID: String) {
@@ -89,8 +107,25 @@ final class WallpaperEngine {
         players[displayID]?.setFillMode(mode)
     }
 
+    /// Stops every player for the duration of a lock, and starts it again on the way
+    /// out. Coming back needs the surface rebuilt — the shield took it — so this uses
+    /// `restartLoop`, the tool measured to be right for that transition. Display sleep
+    /// suspends through here too, but *wakes* through `handleWake` instead, which
+    /// re-attaches: the two causes look identical from here and don't share a cure.
+    func setSuspended(_ suspended: Bool) {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+        guard !suspended else {
+            applyRates() // rate(for:) now returns 0 for every display
+            return
+        }
+        for player in players.values { player.restartLoop() }
+        applyRates()
+    }
+
     /// Waking from display or system sleep leaves the video layers detached.
     func handleWake() {
+        isSuspended = false
         for (id, player) in players {
             player.reattach()
             windows[id]?.orderFront(nil)
