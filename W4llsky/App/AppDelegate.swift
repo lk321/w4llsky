@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lockHotKey: LockHotKey?
     private var wakeTokens: [NSObjectProtocol] = []
     private var pressure: SystemPressure?
+    /// The saver has to play on the lock screen whatever covers the desktop.
+    private var isScreenLocked = false
+    /// The unit tests run inside this app. Their host must not tell the real saver to pause.
+    private let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar-only: no Dock icon, no Cmd+Tab
@@ -32,13 +36,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    // Displays first, and read fresh. Sleeping at the office and waking at
+                    // home can deliver this before the screen-parameters notification, and
+                    // then the cached list still names the office monitors: waking first
+                    // would re-attach and order front the office windows at office
+                    // coordinates over the home desktop until the displays were
+                    // re-announced. A race in the code, not one seen happening; it matters
+                    // now that W4llsky draws every display.
+                    self.displayObserver.resync()
+                    self.reconcile(self.displayObserver.current)
                     // Unconditionally, *not* via setSuspended(false): a wake can arrive
                     // with nothing suspended — an unlock that beat it to clearing the
                     // flag, or a KVM/monitor input switch with no sleep notification at
                     // all — and skipping the re-attach there is the "wallpaper reverted
                     // to the desktop picture" bug this observer exists to prevent.
                     self.engine.handleWake()
-                    self.reconcile(self.displayObserver.current)
+                    // Woken on the lock screen (a key press on a sleeping, locked Mac):
+                    // nothing of ours is visible yet, and unlocking has to find the engine
+                    // suspended, or it skips the surface rebuild and the desktop comes
+                    // back frozen.
+                    if self.isScreenLocked { self.engine.setSuspended(true) }
                 }
             })
         }
@@ -62,9 +79,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             wakeTokens.append(DistributedNotificationCenter.default().addObserver(
                 forName: Notification.Name(name), object: nil, queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.engine.setSuspended(suspended) }
+                MainActor.assumeIsolated { self?.screenLockChanged(locked: suspended) }
             })
         }
+        wakeTokens.append(DistributedNotificationCenter.default().addObserver(
+            forName: LockScreenLibrary.changedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lockVideoChanged() }
+        })
+
         // However many displays and videos there are, the wallpaper yields before the Mac
         // chokes: stop decoding under memory warning or heat, release every decoder under
         // critical memory, and rebuild only once memory is back to normal.
@@ -75,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         engine.setThrottled(pressure?.level != .normal)
 
-        ScreenSaverInstaller.installIfOutdated()
+        if !isTestHost { ScreenSaverInstaller.installIfOutdated() } // a test run would install its Debug saver
         SystemScreenSaver.removeRedundantScreenSaverSelection()
         reconcile(displayObserver.current)
 
@@ -83,6 +106,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar?.pressureLevel = { [weak self] in self?.pressure?.level ?? .normal }
         refreshLockHotKey()
         menuBar?.onLockSetupChanged = { [weak self] in self?.lockSetupChanged() }
+    }
+
+    /// Hands the saver's pause back while nothing of ours is drawing. Only a clean quit
+    /// gets here; see `LockScreenLibrary.coverURL` for the crash case.
+    func applicationWillTerminate(_ notification: Notification) {
+        publishCover(false)
+    }
+
+    /// The desktop hands over to the lock screen and back. On lock the saver takes the
+    /// playhead from us, so the lock screen continues the frame the desktop was showing;
+    /// on unlock we take it back, extrapolated over however long the Mac stayed locked,
+    /// which is where the lock screen's copy got to.
+    private func screenLockChanged(locked: Bool) {
+        isScreenLocked = locked
+        let lockVideo = VideoPipeline.existing(for: LockScreenLibrary.videoURL)
+        if locked {
+            if let lockVideo, !isTestHost {
+                LockScreenLibrary.savePlayhead(.init(
+                    position: lockVideo.position,
+                    hostTime: CACurrentMediaTime(),
+                    rate: store.configuration.playbackRate
+                ))
+            }
+            publishCover(false)
+            engine.setSuspended(true)
+        } else {
+            engine.setSuspended(false)
+            if let lockVideo, let playhead = LockScreenLibrary.loadPlayhead() {
+                lockVideo.seek(to: playhead.position(at: CACurrentMediaTime()))
+            }
+            reconcile(displayObserver.current)
+        }
+    }
+
+    private func publishCover(_ covered: Bool) {
+        guard !isTestHost else { return }
+        LockScreenLibrary.setDesktopCovered(covered)
     }
 
     /// Claimed only while the user wants it, so the plain macOS lock stays available
@@ -109,20 +169,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // system's own desktop picture shows through meanwhile.
         guard pressure?.level != .release else {
             engine.removeAllForMissingDisplays(currentIDs: [])
+            publishCover(false)
             return
         }
 
         let ids = Set(snapshots.map(\.id))
         engine.removeAllForMissingDisplays(currentIDs: ids)
 
-        // macOS draws the video itself when it is selected as the system wallpaper, on
-        // every display and behind the lock screen. Drawing our own copy over it would
-        // decode the same file a second time for something nobody can see — and worse,
-        // it *hides* the system's copy, which macOS then throttles to a couple of frames
-        // a second. That throttled pipeline is the one the lock screen inherits, so it
-        // has to spin back up to 30 fps while you watch: the stutter for the first
-        // seconds of the lock screen was our own window's fault.
-        let systemDrawsWallpaper = SystemScreenSaver.isDesktopWallpaper
+        // When the video is the system wallpaper, macOS is supposed to draw it on every
+        // display and behind the lock screen. On the desktop it doesn't, reliably: the saver
+        // decodes at 60 fps while the screen moves about once every few seconds, on every
+        // display including an uncovered primary (`displayed: 0–3` per 6s, `55` once). Our
+        // own window is smooth on the same setup, so we draw every display ourselves: its
+        // own assignment, or else the lock screen video. The system copy stays up for the
+        // lock screen and keeps decoding underneath (~6.5%), which is the price of a warm
+        // lock. Measured on macOS 27.0 (26A428), laptop plus two 1080p monitors.
+        let lockVideo = SystemScreenSaver.isDesktopWallpaper ? LockScreenLibrary.load() : nil
 
         // Resolved once instead of per display: `screen(forID:)` maps *every* NSScreen
         // through CGDisplayCreateUUIDFromDisplayID and `localizedName` to find one, so
@@ -136,7 +198,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let screen = screens[snapshot.id] else { continue }
             let assignment = store.configuration.assignments[snapshot.id]
 
-            if let assignment, systemDrawsWallpaper, systemPlays(assignment) {
+            if assignment == nil, lockVideo == nil {
+                // Nothing of ours belongs here — including a stand-in left over from
+                // before "Play on the Lock Screen" was turned off.
                 engine.remove(displayID: snapshot.id)
             } else if engine.hasWindow(for: snapshot.id) {
                 engine.reposition(displayID: snapshot.id, screen: screen)
@@ -148,14 +212,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     to: screen,
                     displayID: snapshot.id
                 )
+            } else if let lockVideo {
+                engine.assign(
+                    url: LockScreenLibrary.videoURL,
+                    rate: store.configuration.playbackRate,
+                    fillMode: lockVideo.fillMode,
+                    to: screen,
+                    displayID: snapshot.id
+                )
             }
         }
+
+        // From what the engine actually holds, after the loop, so a rebuild's
+        // remove-then-assign never shows the saver a gap. The saver's pipeline is shared by
+        // all its views, so it may pause only if *every* display is ours.
+        publishCover(
+            lockVideo != nil && !isScreenLocked && !snapshots.isEmpty
+                && snapshots.allSatisfy { engine.hasWindow(for: $0.id) }
+        )
     }
 
-    /// Only steps aside for the *same* file: a display given its own video still gets
-    /// its own window, since the system wallpaper is one video for the whole Mac.
-    private func systemPlays(_ assignment: WallpaperAssignment) -> Bool {
-        guard let url = SecurityScopedBookmark.resolve(assignment.bookmarkData) else { return false }
-        return LockScreenLibrary.isSameFile(as: url)
+    /// `install` swaps LockScreen.mp4 for a new inode at the same path, so a stand-in
+    /// window would keep playing the old file. Unassigned displays only ever hold
+    /// stand-ins (`removeVideo` drops the rest), so rebuild exactly those.
+    /// ponytail: rebuilds on speed/scaling changes too, a brief restart of the clip;
+    /// compare file identity first if that ever bothers anyone.
+    private func lockVideoChanged() {
+        for snapshot in displayObserver.current where store.configuration.assignments[snapshot.id] == nil {
+            engine.remove(displayID: snapshot.id)
+        }
+        reconcile(displayObserver.current)
     }
 }

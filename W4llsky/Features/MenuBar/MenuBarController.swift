@@ -214,11 +214,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(infoItem(lock.map { "   \($0.videoName)" } ?? "No video set"))
         if lock != nil, SystemScreenSaver.isDesktopWallpaper, differsFromDesktopVideo {
-            // macOS stops a wallpaper it can't see at all — measured: zero decode
-            // pipelines while our own window covers it — so locking has to cold-start a
-            // 4K decoder in front of the user. Matching the two videos is the fix, and
-            // the menu is where they'd notice.
-            menu.addItem(infoItem("   ⚠︎ Differs from the desktop video — starts cold"))
+            // The lock screen shows a different video than the desktop did. The saver
+            // stays warm at rate 0 underneath, so this isn't a cold start any more; it's
+            // only worth telling the user.
+            menu.addItem(infoItem("   ⚠︎ Differs from the desktop video"))
         }
 
         let choose = NSMenuItem(
@@ -360,6 +359,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         store.configuration.assignments[displayID] = nil
         store.save()
         engine.remove(displayID: displayID)
+        onLockSetupChanged?() // the display may now need the lock screen stand-in
     }
 
     @objc private func setFillMode(_ sender: NSMenuItem) {

@@ -68,9 +68,17 @@ final class WallpaperEngine {
     }
 
     func assign(bookmark: Data, rate: Float, fillMode: FillMode, to screen: NSScreen, displayID: String) {
+        guard let url = SecurityScopedBookmark.resolve(bookmark) else {
+            self.rate = rate
+            remove(displayID: displayID)
+            return
+        }
+        assign(url: url, rate: rate, fillMode: fillMode, to: screen, displayID: displayID)
+    }
+
+    func assign(url: URL, rate: Float, fillMode: FillMode, to screen: NSScreen, displayID: String) {
         self.rate = rate
         remove(displayID: displayID)
-        guard let url = SecurityScopedBookmark.resolve(bookmark) else { return }
 
         let window = DesktopWindow(screen: screen)
         let player = WallpaperPlayer(url: url, fillMode: fillMode)

@@ -58,6 +58,15 @@ final class WallpaperRateTests: XCTestCase {
     }
 }
 
+/// The lock screen continues the desktop's frame, and the desktop the lock screen's.
+final class PlayheadTests: XCTestCase {
+    func testPlayheadAdvancesWithTheClockAtTheVideosRate() {
+        let playhead = LockScreenLibrary.Playhead(position: 10, hostTime: 100, rate: 1.5)
+        XCTAssertEqual(playhead.position(at: 100), 10)
+        XCTAssertEqual(playhead.position(at: 104), 16, "4s locked at 1.5×")
+    }
+}
+
 /// Every display, and every saver view in one process, used to be a 4K decoder of its
 /// own. One file is one decoder per process now, and it goes away with the last view.
 @MainActor

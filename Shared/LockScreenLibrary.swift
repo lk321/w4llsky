@@ -88,6 +88,60 @@ enum LockScreenLibrary {
         postChanged()
     }
 
+    // MARK: - Desktop handoff
+
+    /// W4llsky draws every display itself while the video is the system wallpaper (the
+    /// system copy barely moves on the desktop), so the saver underneath decodes for
+    /// nobody. This file exists exactly while that is true and the Mac is unlocked. The
+    /// saver pauses at rate 0 while it exists, keeping its decoder warm for the lock screen.
+    /// A file rather than only a notification: WallpaperAgent builds saver views
+    /// whenever it likes, and a new view has to know the state without waiting for news.
+    /// ponytail: a crash leaves the file behind. The desktop copy then stays paused until
+    /// W4llsky relaunches; the lock screen still plays, since the saver overrides on lock.
+    static let coverChangedNotification = Notification.Name("com.personal.W4llsky.desktopCoverChanged")
+    static var coverURL: URL { folder.appendingPathComponent("DesktopCovered") }
+
+    static var isDesktopCovered: Bool {
+        FileManager.default.fileExists(atPath: coverURL.path)
+    }
+
+    /// Compares against the file, not a cached flag, so it is right after a crash too.
+    static func setDesktopCovered(_ covered: Bool) {
+        guard covered != isDesktopCovered else { return }
+        if covered {
+            guard FileManager.default.createFile(atPath: coverURL.path, contents: nil) else { return }
+        } else {
+            try? FileManager.default.removeItem(at: coverURL)
+        }
+        DistributedNotificationCenter.default().postNotificationName(
+            coverChangedNotification, object: nil, userInfo: nil, deliverImmediately: true
+        )
+    }
+
+    /// Where the desktop's copy of the lock screen video was when the Mac locked. The lock
+    /// screen continues from there instead of from wherever the paused saver stopped.
+    /// Both processes read the same host clock, so "now" means the same thing on both sides.
+    struct Playhead: Codable {
+        var position: Double
+        var hostTime: Double
+        var rate: Float
+
+        func position(at now: Double) -> Double {
+            position + (now - hostTime) * Double(rate)
+        }
+    }
+
+    static var playheadURL: URL { folder.appendingPathComponent("Playhead.json") }
+
+    static func savePlayhead(_ playhead: Playhead) {
+        try? JSONEncoder().encode(playhead).write(to: playheadURL, options: .atomic)
+    }
+
+    static func loadPlayhead() -> Playhead? {
+        guard let data = try? Data(contentsOf: playheadURL) else { return nil }
+        return try? JSONDecoder().decode(Playhead.self, from: data)
+    }
+
     /// Distributed, because the reader is another process (the sandboxed saver host).
     private static func postChanged() {
         DistributedNotificationCenter.default().postNotificationName(

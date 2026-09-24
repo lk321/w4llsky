@@ -129,11 +129,12 @@ Before it, every display in our app was its own 4K decoder, and so was every sav
 view in the same `legacyScreenSaver`. Now extra displays and extra views cost one layer
 each. What was measured, on one 5120×1440 display only: one `legacyScreenSaver`, one
 view, one decoder, 28 MB; toggling "Play on the Lock Screen" respawns it with no
-orphans. Still **unverified**: whether WallpaperAgent uses one `legacyScreenSaver` for
-every display or one per display (if one per display, sharing saves nothing on that
-side), and the "more views on every lock" path. The window leak on setup switches was
+orphans. Since verified: WallpaperAgent uses one `legacyScreenSaver` for every display
+(three displays, three views, one decoder), not one per display. Still unverified: the
+"more views on every lock" path. In zsh, `log` is a builtin, so call `/usr/bin/log`;
+bare `log show` prints nothing and looks like "no logs". The window leak on setup switches was
 also ruled out: `orderOut` without `close()` released the windows too. The saver logs
-`N views, M decoders` at debug level (`log stream --level debug --predicate
+`N views, M decoders` at debug level (`/usr/bin/log stream --level debug --predicate
 'subsystem == "com.personal.W4llsky.saver"'`). If M climbs above 1 per process, the bug
 is back. `SharedDecodeTests` pins sharing, release, and same-path relinking, plus 30
 home↔work setup switches with nothing left behind.
@@ -364,13 +365,61 @@ and `contentType: screenSaver`. So once the video is the system wallpaper, **the
 screen video and the desktop video are necessarily the same file** — there is no
 arrangement in which they differ.
 
-That makes overlap the thing to avoid. When the same video is both the system wallpaper
-and a display's assignment, `AppDelegate.reconcile` skips creating our own
-`DesktopWindow` for it (`LockScreenLibrary.isSameFile(as:)`, compared by
-`fileResourceIdentifierKey` — `install` hard-links the source, so paths differ but the
-inode does not). Drawing our own copy over the system's would decode the file twice, and
-worse: our window *covers* the system's copy, which macOS then throttles to ~1.5 fps
-(measured: `enqueued: 8, displayed: 0`).
+That once made overlap the thing to avoid: `AppDelegate.reconcile` skipped our own
+`DesktopWindow` wherever a display's assignment was the system wallpaper's file.
+**On macOS 27.0 (26A428) that skip is gone**, because the system copy does not animate
+on the desktop reliably. Measured on a laptop plus two 1080p monitors: one
+`legacyScreenSaver` for all three displays (three views, one open handle on the mp4, one
+decoder) decodes at 60 fps while the screen changes about once every few seconds. That
+held on the uncovered primary too, after respawning the saver and WallpaperAgent, with
+`animationTimeInterval = 1/60`, and without sharing the decoder. Its gmstats read
+`displayed: 0–3` per 6s (`55` once), but they read `360` while our windows covered it, so
+**they don't track what is visible**. Judge the system copy by eye, or with a
+`screencapture -V` recording, with W4llsky quit. WallpaperAgent also places each display's
+"Screen Saver Window" at the display's Cocoa origin read as a CG one, so on monitors
+above the laptop it sits off every screen.
+
+So while the video is the system wallpaper, `reconcile` draws **every** display itself:
+the display's own assignment, or else `LockScreenLibrary.videoURL` (a stand-in). All of
+them share one `VideoPipeline`. Measured: `displayed: 360` per 6s on all three, about 5%
+CPU and 40 MB in W4llsky, flat across 10 rebuilds. The system copy stays up for the lock
+screen and keeps decoding underneath (~6.5%, 76 MB), so the lock starts warm and there
+are two decoders system-wide. Unassigned displays only ever hold stand-ins, so
+`LockScreenLibrary.changedNotification` rebuilds exactly those (`install` swaps the
+inode at the same path). If Apple fixes the desktop path (check by eye, not counters),
+bring the skip back. The old reasoning follows.
+
+**The saver pauses while W4llsky covers the desktop.** The app owns the state:
+`LockScreenLibrary.coverURL` (`DesktopCovered`) exists exactly while the video is the
+system wallpaper, every display has a W4llsky window, and the Mac is unlocked. It is
+computed at the end of `reconcile` from what the engine actually holds, so a rebuild
+never flaps it. `coverChangedNotification` tells the saver to re-read it. The saver
+plays iff `!covered || isLocked` (process-wide, from its own lock observers). While
+covered it sits at rate 0 with the decoder warm (0.0–0.1% CPU instead of ~6.5%). A file
+and not only a notification, because WallpaperAgent builds new views whenever it likes.
+It is cleared on lock and in `applicationWillTerminate`. A crash leaves it behind: the
+desktop copy stays paused until relaunch, and the lock screen still plays. The unit-test
+host never writes it (`XCTestConfigurationFilePath`), nor installs its Debug saver.
+
+The handoff is continuous. On lock the app writes `Playhead.json` (its lock-video
+pipeline's position plus `CACurrentMediaTime()`, a host clock both processes share), and
+the saver's `restartLoop(at:)` lands there at +0.4s. On unlock the app seeks to the same
+playhead, extrapolated by the time spent locked. `restartLoop` itself no longer jumps to
+the start of the clip: it seeks back to where the video was after `advanceToNextItem()`,
+and the surface fix still holds. Measured on two lock cycles: the lock screen showed
+272–283 frames in the first ~5s, W4llsky was back to ~360 per 6s after unlock, and the
+user saw no stall, black frame or jump either way.
+
+**Display churn doesn't stack anything.** Mirroring a monitor on and off (5 times, 3s
+apart): W4llsky windows = screens throughout, one decoder, and WallpaperAgent tears
+down *all* saver views and rebuilds them on every change (3→0→3, one decoder,
+takes = releases). The path mirroring can't simulate is sleeping at the office and
+waking at home. The wake notification can beat the screen-parameters one, so the wake
+handler re-reads the displays (`DisplayObserver.resync()`) and reconciles *before*
+`handleWake()`. Otherwise it would order the office windows front at office coordinates
+and reconcile against the stale list. That race is visible in the code, not reproduced.
+It is hardening, now that W4llsky draws every display. Waking on the lock screen puts
+the engine straight back into suspension, so unlocking still rebuilds the surface.
 
 **Don't count on that throttle, though.** Measured again since, with a full-screen
 desktop-level window completely covering the system wallpaper: `legacyScreenSaver` went

@@ -43,6 +43,12 @@ final class DisplayObserver {
         NSScreen.screens.first { DisplaySnapshotFactory.snapshot(for: $0).id == id }
     }
 
+    /// Re-reads the displays now instead of waiting for the notification, which can land
+    /// after a wake that already needs the new list.
+    func resync() {
+        current = NSScreen.screens.map(DisplaySnapshotFactory.snapshot)
+    }
+
     /// macOS sends this notification in bursts — several per arrangement change, and
     /// more of them the more displays are attached — and most carry no actual change.
     /// The snapshot is Equatable precisely so the reconcile behind it can be skipped.

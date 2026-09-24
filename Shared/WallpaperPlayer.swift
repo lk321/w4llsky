@@ -102,12 +102,35 @@ final class VideoPipeline {
     /// Asks `AVPlayerLooper` for its gapless transition now, instead of waiting for the
     /// end of the clip. Every view on a lock screen asks at once; the pipeline is shared,
     /// so only the first is honoured — N `advanceToNextItem()`s would skip N items.
-    func restartLoop() {
+    ///
+    /// The transition lands on the next replica's first frame, which on screen was a jump
+    /// back to the start of the clip on every lock and unlock. So it seeks back to where
+    /// the video was, or to `position` when the other process knows better (the desktop
+    /// handing over to the lock screen and back).
+    func restartLoop(at position: Double? = nil) {
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastRestart > 1 else { return }
         lastRestart = now
+        let resume = position ?? self.position
         player.advanceToNextItem()
+        seek(to: resume)
         applyRate()
+    }
+
+    /// Seconds into the clip.
+    var position: Double { player.currentTime().seconds }
+
+    /// Exact, so the handoff lands on the frame that was showing. The keyframe interval is
+    /// short (1s in the files measured), so this decodes at most a second of video.
+    func seek(to seconds: Double) {
+        guard let duration = player.currentItem?.duration.seconds, duration > 0, seconds.isFinite else { return }
+        let time = CMTime(seconds: seconds.truncatingRemainder(dividingBy: duration), preferredTimescale: 600)
+        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    /// The pipeline already playing `url` in this process, without building one.
+    static func existing(for url: URL) -> VideoPipeline? {
+        live[identity(of: url)]?.value
     }
 
     deinit {
@@ -171,8 +194,8 @@ final class WallpaperPlayer {
     /// Detaching the layer is the wrong tool for the lock screen: it leaves the orphaned
     /// image queues decoding and takes longer to come back (measured 8s vs 5s). The
     /// looper's transition is what was actually observed rebuilding the surface.
-    func restartLoop() {
-        pipeline.restartLoop()
+    func restartLoop(at position: Double? = nil) {
+        pipeline.restartLoop(at: position)
     }
 
     func setFillMode(_ mode: FillMode) {

@@ -29,6 +29,9 @@ final class W4llskySaverView: ScreenSaverView {
     /// pipelines climbing is the stacking bug back. `log stream --level debug
     /// --predicate 'subsystem == "com.personal.W4llsky.saver"'` shows it live.
     private static var playingViews = 0
+    /// Process-wide, because WallpaperAgent builds new views at lock time too, and a view
+    /// born after the notification still has to know.
+    private static var isLocked = false
     private static let log = Logger(subsystem: "com.personal.W4llsky.saver", category: "playback")
 
     override init?(frame: NSRect, isPreview: Bool) {
@@ -54,6 +57,17 @@ final class W4llskySaverView: ScreenSaverView {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(screenLocked),
             name: .init("com.apple.screenIsLocked"), object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(screenUnlocked),
+            name: .init("com.apple.screenIsUnlocked"), object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+        // W4llsky draws the desktop itself and tells us when it covers every display.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(coverChanged),
+            name: LockScreenLibrary.coverChangedNotification, object: nil,
             suspensionBehavior: .deliverImmediately
         )
 
@@ -84,10 +98,28 @@ final class W4llskySaverView: ScreenSaverView {
 
     /// Once the shield has actually taken the display — the notification is sent while
     /// the lock is still going up, so acting on it immediately is too early.
+    ///
+    /// Resumes at once (a paused pipeline is still warm, so there is no cold start) and
+    /// continues from the frame the desktop was showing, which W4llsky wrote down as the
+    /// Mac locked. A playhead that isn't from this lock is ignored, and the video resumes
+    /// where it paused.
     @objc private func screenLocked() {
+        Self.isLocked = true
+        syncPlayback()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-            self?.player?.restartLoop()
+            let now = CACurrentMediaTime()
+            let playhead = LockScreenLibrary.loadPlayhead().flatMap { abs(now - $0.hostTime) < 5 ? $0 : nil }
+            self?.player?.restartLoop(at: playhead?.position(at: now))
         }
+    }
+
+    @objc private func screenUnlocked() {
+        Self.isLocked = false
+        syncPlayback()
+    }
+
+    @objc private func coverChanged() {
+        syncPlayback()
     }
 
     @available(*, unavailable)
@@ -137,7 +169,11 @@ final class W4llskySaverView: ScreenSaverView {
             Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
         }
         player?.setFillMode(config.fillMode) // may have changed under an existing player
-        player?.setRate(level == .throttle ? 0 : config.rate)
+        // Covered by W4llsky's own windows, nobody sees this copy, but the lock screen needs
+        // it the instant the Mac locks. Rate 0 keeps the decoder warm; releasing it would
+        // mean a cold 4K start behind the password field.
+        let covered = LockScreenLibrary.isDesktopCovered && !Self.isLocked
+        player?.setRate(level == .throttle || covered ? 0 : config.rate)
     }
 
     /// Releasing the player is what frees the decoder — setting its rate to 0 does not.
