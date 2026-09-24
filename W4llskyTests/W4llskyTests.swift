@@ -42,6 +42,72 @@ final class WallpaperRateTests: XCTestCase {
     }
 }
 
+/// Every display, and every saver view in one process, used to be a 4K decoder of its
+/// own. One file is one decoder per process now, and it goes away with the last view.
+@MainActor
+final class SharedDecodeTests: XCTestCase {
+    private func videoFile(_ bytes: String = "a") throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("w4llsky-\(name.hashValue).mp4")
+        try? FileManager.default.removeItem(at: url)
+        try Data(bytes.utf8).write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    func testDisplaysShowingOneFileShareOneDecoder() throws {
+        let url = try videoFile()
+        let before = VideoPipeline.liveCount
+        var displays: [WallpaperPlayer] = (0..<3).map { _ in WallpaperPlayer(url: url, fillMode: .fill) }
+        XCTAssertEqual(VideoPipeline.liveCount, before + 1)
+        XCTAssertTrue(displays.allSatisfy { $0.view.videoLayer.player === displays[0].view.videoLayer.player })
+
+        displays.removeAll()
+        XCTAssertEqual(VideoPipeline.liveCount, before, "the last display to go must free the decoder")
+    }
+
+    /// LockScreenLibrary replaces LockScreen.mp4 at the same path; a view built after
+    /// that must not be handed the old video just because another view still holds it.
+    func testReplacingTheFileAtTheSamePathGetsANewDecoder() throws {
+        let url = try videoFile("old")
+        let old = WallpaperPlayer(url: url, fillMode: .fill)
+        try FileManager.default.removeItem(at: url)
+        try Data("new".utf8).write(to: url)
+        let new = WallpaperPlayer(url: url, fillMode: .fill)
+        XCTAssertFalse(old.view.videoLayer.player === new.view.videoLayer.player)
+    }
+
+    /// Home 49" one day, three 27" the next: every reconnect tears windows down and
+    /// builds new ones. Four displays on one file must be one decoder, and thirty round
+    /// trips must leave no decoder and no window behind.
+    func testSwitchingSetupsLeavesNothingBehind() throws {
+        let screen = try XCTUnwrap(NSScreen.main)
+        let bookmark = try XCTUnwrap(SecurityScopedBookmark.makeBookmark(for: try videoFile()))
+        let engine = WallpaperEngine()
+        let decoders = VideoPipeline.liveCount
+        let windows = autoreleasepool { NSApp.windows.count }
+
+        for _ in 0..<30 {
+            autoreleasepool {
+                for id in ["home-49", "work-a", "work-b", "work-c"] {
+                    engine.assign(bookmark: bookmark, rate: 1, fillMode: .fill, to: screen, displayID: id)
+                }
+                XCTAssertEqual(VideoPipeline.liveCount, decoders + 1, "four displays, one file: one decoder")
+                engine.removeAllForMissingDisplays(currentIDs: [])
+            }
+        }
+
+        XCTAssertEqual(VideoPipeline.liveCount, decoders)
+        XCTAssertEqual(autoreleasepool { NSApp.windows.count }, windows)
+    }
+
+    func testReleasedPlayerLetsGoOfItsLayer() throws {
+        var player: WallpaperPlayer? = WallpaperPlayer(url: try videoFile(), fillMode: .fill)
+        let layer = player!.view.videoLayer
+        player = nil
+        XCTAssertNil(layer.player, "a view AppKit keeps alive must not keep the decoder alive")
+    }
+}
+
 final class W4llskyTests: XCTestCase {
 
     private let ultrawide = CGSize(width: 5120, height: 1440)

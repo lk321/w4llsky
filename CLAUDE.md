@@ -62,8 +62,9 @@ layers, no protocol abstractions except at real AppKit/AVFoundation boundaries.
 ```
 Shared/                 compiled into the app AND the screen saver:
                           VideoPresentation (FillMode + scaling math + blurred backdrop),
-                          WallpaperContentView (layer host), WallpaperPlayer (AVQueuePlayer/
-                          AVPlayerLooper/AVPlayerLayer wrapper), LockScreenLibrary (the
+                          WallpaperContentView (layer host), WallpaperPlayer (one display's
+                          AVPlayerLayer on a shared VideoPipeline — AVQueuePlayer/
+                          AVPlayerLooper, one per file per process), LockScreenLibrary (the
                           handoff file both processes read)
 W4llskySaver/           W4llskySaverView — the .saver bundle's principal class
 App/                    AppDelegate: wires everything together, no logic of its own
@@ -108,6 +109,34 @@ Playback: `AVQueuePlayer` + `AVPlayerLooper` own the loop (no manual seek/timers
 used uniformly for pause/resume and the menu's playback-speed picker. `WallpaperPlayer`
 keeps one KVO on `timeControlStatus` to re-assert a non-zero rate: AVPlayer drops a rate
 set before the item is ready, and can fall back to 0 after display sleep.
+
+### One decoder per file, not per display
+
+`VideoPipeline` (in `Shared/WallpaperPlayer.swift`) is the `AVQueuePlayer` + looper, and
+there is **one per video file per process**. It lives in a weak cache keyed by file
+identity (device + inode, *not* path, because `LockScreenLibrary.install` replaces
+LockScreen.mp4 at the same path). Each `WallpaperPlayer` is only one display's
+`AVPlayerLayer` attached to the shared pipeline. One AVPlayer drives any number of layers
+off a single decode. Measured with four 4K layers: 18 MB / 1.5% CPU shared versus
+31 MB / 3.9% for four players, with all four frame-locked. The pipeline plays at the
+highest rate any attached display asks for, and it stops only when every display asks
+for 0. `restartLoop()` is coalesced (once a second), because every saver view calls it
+on the same lock notification. `reattach()` is per layer and never touches the shared
+queue.
+
+This is aimed at "videos stacking until the mouse froze" with several monitors.
+Before it, every display in our app was its own 4K decoder, and so was every saver
+view in the same `legacyScreenSaver`. Now extra displays and extra views cost one layer
+each. What was measured, on one 5120×1440 display only: one `legacyScreenSaver`, one
+view, one decoder, 28 MB; toggling "Play on the Lock Screen" respawns it with no
+orphans. Still **unverified**: whether WallpaperAgent uses one `legacyScreenSaver` for
+every display or one per display (if one per display, sharing saves nothing on that
+side), and the "more views on every lock" path. The window leak on setup switches was
+also ruled out: `orderOut` without `close()` released the windows too. The saver logs
+`N views, M decoders` at debug level (`log stream --level debug --predicate
+'subsystem == "com.personal.W4llsky.saver"'`). If M climbs above 1 per process, the bug
+is back. `SharedDecodeTests` pins sharing, release, and same-path relinking, plus 30
+home↔work setup switches with nothing left behind.
 
 ### Scaling (why a video looks right on any display)
 

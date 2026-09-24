@@ -14,11 +14,19 @@
 import AppKit
 import AVFoundation
 import ScreenSaver
+import os
 
 @objc(W4llskySaverView)
 final class W4llskySaverView: ScreenSaverView {
     private var player: WallpaperPlayer?
     private var config: LockScreenConfig?
+
+    /// How many views WallpaperAgent has animating in this process, against how many
+    /// decoders they share. Views climbing with pipelines at 1 is the design working;
+    /// pipelines climbing is the stacking bug back. `log stream --level debug
+    /// --predicate 'subsystem == "com.personal.W4llsky.saver"'` shows it live.
+    private static var playingViews = 0
+    private static let log = Logger(subsystem: "com.personal.W4llsky.saver", category: "playback")
 
     override init?(frame: NSRect, isPreview: Bool) {
         super.init(frame: frame, isPreview: isPreview)
@@ -67,6 +75,7 @@ final class W4llskySaverView: ScreenSaverView {
 
     deinit {
         DistributedNotificationCenter.default().removeObserver(self)
+        if player != nil { MainActor.assumeIsolated { Self.playingViews -= 1 } }
     }
 
     /// Once the shield has actually taken the display — the notification is sent while
@@ -119,6 +128,8 @@ final class W4llskySaverView: ScreenSaverView {
             addSubview(player.view)
             player.updatePresentation()
             self.player = player
+            Self.playingViews += 1
+            Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
         }
         player?.setFillMode(config.fillMode) // may have changed under an existing player
         player?.setRate(config.rate)
@@ -126,8 +137,11 @@ final class W4llskySaverView: ScreenSaverView {
 
     /// Releasing the player is what frees the decoder — setting its rate to 0 does not.
     private func teardown() {
-        player?.view.removeFromSuperview()
-        player = nil
+        guard let player else { return }
+        player.view.removeFromSuperview()
+        self.player = nil
+        Self.playingViews -= 1
+        Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
     }
 
     override var hasConfigureSheet: Bool { false }
