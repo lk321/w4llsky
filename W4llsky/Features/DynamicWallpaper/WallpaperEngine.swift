@@ -21,6 +21,8 @@ final class WallpaperEngine {
     /// for as long as the Mac stays locked. Pure waste, and it scales with monitor
     /// count; it is idle cost only, so it buys nothing back while the Mac is in use.
     private var isSuspended = false
+    /// Set while the Mac is short of memory or running hot (`SystemPressure.throttle`).
+    private var isThrottled = false
     private var rate: Float = 1
     private var occlusionToken: NSObjectProtocol?
 
@@ -51,8 +53,8 @@ final class WallpaperEngine {
 
     /// Every reason a wallpaper must not be decoding, in one place. Pure so the
     /// combinations can be checked without a display attached.
-    static func rate(_ rate: Float, paused: Bool, suspended: Bool, visible: Bool) -> Float {
-        paused || suspended || !visible ? 0 : rate
+    static func rate(_ rate: Float, paused: Bool, suspended: Bool, throttled: Bool, visible: Bool) -> Float {
+        paused || suspended || throttled || !visible ? 0 : rate
     }
 
     private func rate(for displayID: String) -> Float {
@@ -60,6 +62,7 @@ final class WallpaperEngine {
             rate,
             paused: isPaused,
             suspended: isSuspended,
+            throttled: isThrottled,
             visible: windows[displayID]?.occlusionState.contains(.visible) == true
         )
     }
@@ -77,7 +80,7 @@ final class WallpaperEngine {
         // Deliberately not gated on occlusion: a window ordered in this instant hasn't
         // been given an occlusion state yet, and reading it here would leave the
         // wallpaper stopped until something else moved. The notification takes over.
-        player.setRate(isPaused ? 0 : rate)
+        player.setRate(isPaused || isThrottled ? 0 : rate)
 
         windows[displayID] = window
         players[displayID] = player
@@ -134,6 +137,12 @@ final class WallpaperEngine {
             // to stay stopped just because nothing else moved afterwards.
             player.setRate(rate(for: id))
         }
+    }
+
+    func setThrottled(_ throttled: Bool) {
+        guard throttled != isThrottled else { return }
+        isThrottled = throttled
+        applyRates()
     }
 
     func setRate(_ newRate: Float) {

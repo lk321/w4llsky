@@ -20,6 +20,9 @@ import os
 final class W4llskySaverView: ScreenSaverView {
     private var player: WallpaperPlayer?
     private var config: LockScreenConfig?
+    /// Every saver process reacts on its own, so this holds however WallpaperAgent splits
+    /// displays across `legacyScreenSaver` instances.
+    private var pressure: SystemPressure?
 
     /// How many views WallpaperAgent has animating in this process, against how many
     /// decoders they share. Views climbing with pipelines at 1 is the design working;
@@ -39,6 +42,7 @@ final class W4llskySaverView: ScreenSaverView {
         autoresizesSubviews = true
 
         config = LockScreenLibrary.load()
+        pressure = SystemPressure { [weak self] _ in self?.syncPlayback() }
 
         // The shield replaces the display's surface out from under our video layer, and
         // nothing in AVFoundation notices: the player keeps decoding into nothing until
@@ -116,7 +120,8 @@ final class W4llskySaverView: ScreenSaverView {
     /// one — see `SystemScreenSaver.removeRedundantScreenSaverSelection()`, which stops
     /// the duplicates at the source, since nothing here can tell them apart.
     private func syncPlayback() {
-        guard isAnimating, let config, window != nil, !bounds.isEmpty else {
+        let level = pressure?.level ?? .normal
+        guard isAnimating, let config, window != nil, !bounds.isEmpty, level != .release else {
             teardown()
             return
         }
@@ -132,7 +137,7 @@ final class W4llskySaverView: ScreenSaverView {
             Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
         }
         player?.setFillMode(config.fillMode) // may have changed under an existing player
-        player?.setRate(config.rate)
+        player?.setRate(level == .throttle ? 0 : config.rate)
     }
 
     /// Releasing the player is what frees the decoder — setting its rate to 0 does not.

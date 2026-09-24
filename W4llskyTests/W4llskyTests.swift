@@ -27,18 +27,34 @@ final class AboutWindowTests: XCTestCase {
 /// happens — sleep and the lock screen's shield both leave the window "visible".
 final class WallpaperRateTests: XCTestCase {
     func testVisibleWallpaperPlaysAtItsRate() {
-        XCTAssertEqual(WallpaperEngine.rate(1.5, paused: false, suspended: false, visible: true), 1.5)
+        XCTAssertEqual(WallpaperEngine.rate(1.5, paused: false, suspended: false, throttled: false, visible: true), 1.5)
     }
 
     func testEveryReasonToStopStopsIt() {
-        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: false, visible: true), 0)
-        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: true, visible: true), 0)
-        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: false, visible: false), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: false, throttled: false, visible: true), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: true, throttled: false, visible: true), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: false, throttled: false, visible: false), 0)
+    }
+
+    /// A Mac short of memory or running hot stops every wallpaper, visible or not.
+    func testPressureStopsIt() {
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: false, suspended: false, throttled: true, visible: true), 0)
+    }
+
+    func testPressureLevels() {
+        typealias P = SystemPressure
+        XCTAssertEqual(P.level(memory: .normal, thermal: .nominal), .normal)
+        XCTAssertEqual(P.level(memory: .normal, thermal: .fair), .normal)
+        XCTAssertEqual(P.level(memory: .warning, thermal: .nominal), .throttle)
+        XCTAssertEqual(P.level(memory: .normal, thermal: .serious), .throttle)
+        XCTAssertEqual(P.level(memory: .normal, thermal: .critical), .throttle)
+        XCTAssertEqual(P.level(memory: .critical, thermal: .nominal), .release, "rate 0 does not free a decoder")
+        XCTAssertEqual(P.level(memory: .critical, thermal: .critical), .release)
     }
 
     /// Sleeping while covered must not come back playing just because it got uncovered.
     func testReasonsToStopDontCancelOut() {
-        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: true, visible: false), 0)
+        XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: true, throttled: true, visible: false), 0)
     }
 }
 

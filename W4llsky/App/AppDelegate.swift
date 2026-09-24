@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
     private var lockHotKey: LockHotKey?
     private var wakeTokens: [NSObjectProtocol] = []
+    private var pressure: SystemPressure?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu-bar-only: no Dock icon, no Cmd+Tab
@@ -64,11 +65,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainActor.assumeIsolated { self?.engine.setSuspended(suspended) }
             })
         }
+        // However many displays and videos there are, the wallpaper yields before the Mac
+        // chokes: stop decoding under memory warning or heat, release every decoder under
+        // critical memory, and rebuild only once memory is back to normal.
+        pressure = SystemPressure { [weak self] level in
+            guard let self else { return }
+            self.engine.setThrottled(level != .normal)
+            self.reconcile(self.displayObserver.current)
+        }
+        engine.setThrottled(pressure?.level != .normal)
+
         ScreenSaverInstaller.installIfOutdated()
         SystemScreenSaver.removeRedundantScreenSaverSelection()
         reconcile(displayObserver.current)
 
         menuBar = MenuBarController(engine: engine, store: store, displayObserver: displayObserver)
+        menuBar?.pressureLevel = { [weak self] in self?.pressure?.level ?? .normal }
         refreshLockHotKey()
         menuBar?.onLockSetupChanged = { [weak self] in self?.lockSetupChanged() }
     }
@@ -93,6 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Applies persisted assignments to whatever displays are currently connected,
     /// tears down windows for displays that disappeared, and repositions the rest.
     private func reconcile(_ snapshots: [DisplaySnapshot]) {
+        // Critical memory: every window goes, and none is built until it's over. The
+        // system's own desktop picture shows through meanwhile.
+        guard pressure?.level != .release else {
+            engine.removeAllForMissingDisplays(currentIDs: [])
+            return
+        }
+
         let ids = Set(snapshots.map(\.id))
         engine.removeAllForMissingDisplays(currentIDs: ids)
 

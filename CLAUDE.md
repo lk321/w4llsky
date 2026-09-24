@@ -138,6 +138,32 @@ also ruled out: `orderOut` without `close()` released the windows too. The saver
 is back. `SharedDecodeTests` pins sharing, release, and same-path relinking, plus 30
 home↔work setup switches with nothing left behind.
 
+### Yielding under memory and heat pressure
+
+The shared decoder makes the *same* video cost the same on 1 or 20 displays. Measured
+in one process with 20 stacked 3840×2160 windows: 26 MB / 6% CPU shared against
+104 MB / 25% with 20 players. It does nothing for 20 *different* videos, which are
+still 20 decoders, and nothing for WindowServer's per-display compositing. So the hard
+guarantee is `SystemPressure` (`Shared/`), used by both the app and every saver
+process:
+
+- Memory warning, or thermal state `.serious` / `.critical`, means `.throttle`: rate 0
+  through the fourth reason in `WallpaperEngine.rate`, and the saver's `syncPlayback`.
+- Critical memory means `.release`. Rate 0 doesn't free a decoder, so `reconcile` drops
+  every window and builds none, and the saver tears its player down.
+- Recovery happens only on `.normal`, never on a warning, so rebuilding can't flap.
+- It is event-driven: a `DispatchSourceMemoryPressure` on `.main` (the teardown ends in
+  `assumeIsolated` deinits) plus `thermalStateDidChangeNotification`. It costs nothing
+  while idle.
+- `sudo memory_pressure -S -l warn` or `-l critical` exercises it for real (it needs
+  root). The menu shows why a wallpaper stopped.
+
+Deliberately not built:
+- An LRU or "keep warm" cache of pipelines. It would hold decoders nobody is watching;
+  the weak cache is the right one.
+- A cap on distinct decoders. It would override the user's choices.
+- Pausing in Low Power Mode.
+
 ### Scaling (why a video looks right on any display)
 
 `AVPlayerLayer` is *not* added to a window's content view directly — `WallpaperContentView`

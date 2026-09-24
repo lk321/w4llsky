@@ -27,6 +27,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Anything that changes who draws the lock screen / wallpaper: the hot key has
     /// to be re-claimed and the desktop windows re-reconciled against it.
     var onLockSetupChanged: (() -> Void)?
+    /// So a wallpaper stopped by memory or heat pressure doesn't read as a bug.
+    var pressureLevel: (() -> SystemPressure.Level)?
 
     private let statusItem: NSStatusItem
     private var isPaused = false
@@ -68,6 +70,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         )
         pause.target = self
         menu.addItem(pause)
+        if let level = pressureLevel?(), level != .normal {
+            menu.addItem(infoItem(level == .release ? "Stopped: the Mac is low on memory" : "Paused: memory or heat pressure"))
+        }
 
         menu.addItem(.separator())
 
