@@ -65,18 +65,21 @@ Shared/                 compiled into the app AND the screen saver:
                           WallpaperContentView (layer host), WallpaperPlayer (one display's
                           AVPlayerLayer on a shared VideoPipeline — AVQueuePlayer/
                           AVPlayerLooper, one per file per process), LockScreenLibrary (the
-                          handoff file both processes read)
+                          handoff files both processes read), SystemPressure (memory/heat),
+                          SaverPlayback (the saver's pure play/pause/still decision)
 W4llskySaver/           W4llskySaverView — the .saver bundle's principal class
 App/                    AppDelegate: wires everything together, no logic of its own
 Core/
   Display/              DisplaySnapshot (value type) + DisplayObserver
-  Performance/           AppResourceMonitor (self CPU%/RSS via mach task/thread info)
+  Performance/           AppResourceMonitor (self CPU%/RSS via mach task/thread info),
+                          BatteryMonitor (IOKit power-source callback, Battery Saver)
   Persistence/           WallpaperStore (Codable config in UserDefaults), SecurityScopedBookmark,
                           LaunchAtLogin (SMAppService wrapper)
 Features/
   DynamicWallpaper/      DesktopWindow, WallpaperEngine (owns window+player per display id)
   LockScreen/            ScreenSaverInstaller (copies the .saver into ~/Library/Screen Savers)
   MenuBar/                MenuBarController — the entire UI lives here as an NSMenu
+scripts/check-wallpaper.sh  live health check; see "Verifying a change"
 ```
 
 `Core/` must never know about a specific feature. `Features/DynamicWallpaper` must never
@@ -134,8 +137,9 @@ orphans. Since verified: WallpaperAgent uses one `legacyScreenSaver` for every d
 "more views on every lock" path. In zsh, `log` is a builtin, so call `/usr/bin/log`;
 bare `log show` prints nothing and looks like "no logs". The window leak on setup switches was
 also ruled out: `orderOut` without `close()` released the windows too. The saver logs
-`N views, M decoders` at debug level (`/usr/bin/log stream --level debug --predicate
-'subsystem == "com.personal.W4llsky.saver"'`). If M climbs above 1 per process, the bug
+`N views, M decoders` and every change of its `SaverPlayback` decision at notice level,
+so `/usr/bin/log show --last 1h --predicate 'subsystem == "com.personal.W4llsky.saver"'`
+has them after the fact (`scripts/check-wallpaper.sh` prints the last few). If M climbs above 1 per process, the bug
 is back. `SharedDecodeTests` pins sharing, release, and same-path relinking, plus 30
 home↔work setup switches with nothing left behind.
 
@@ -148,22 +152,76 @@ still 20 decoders, and nothing for WindowServer's per-display compositing. So th
 guarantee is `SystemPressure` (`Shared/`), used by both the app and every saver
 process:
 
-- Memory warning, or thermal state `.serious` / `.critical`, means `.throttle`: rate 0
-  through the fourth reason in `WallpaperEngine.rate`, and the saver's `syncPlayback`.
+- Thermal state `.serious` / `.critical` means `.throttle`: rate 0 through the fourth
+  reason in `WallpaperEngine.rate`, and the saver's `syncPlayback` (except while locked:
+  the lock screen is all there is to see, and the app is suspended then anyway).
+- A memory **warning** does nothing, on purpose. Rate 0 frees no memory, and macOS sits
+  at warn (`sysctl kern.memorystatus_vm_pressure_level` = 2) for hours with 37% free.
+  Throttling on it was the "wallpaper stops after a while and never comes back" bug.
 - Critical memory means `.release`. Rate 0 doesn't free a decoder, so `reconcile` drops
   every window and builds none, and the saver tears its player down.
-- Recovery happens only on `.normal`, never on a warning, so rebuilding can't flap.
+- Recovery from critical happens as soon as it drops to warning or normal. No
+  hysteresis: staying released at warn would be the same never-comes-back bug.
 - It is event-driven: a `DispatchSourceMemoryPressure` on `.main` (the teardown ends in
   `assumeIsolated` deinits) plus `thermalStateDidChangeNotification`. It costs nothing
   while idle.
 - `sudo memory_pressure -S -l warn` or `-l critical` exercises it for real (it needs
   root). The menu shows why a wallpaper stopped.
 
+**Battery Saver** is the same `.release`, chosen by the user: on battery and below
+`WallpaperConfiguration.batteryThreshold` (default 50%; 0 = off, 100 = whenever on
+battery; menu "Battery Saver", shown only when `BatteryMonitor.read()` finds an internal
+battery). Plugged in it never fires, whatever the percent. `BatteryMonitor` is an IOKit
+power-source run-loop callback, so no polling, and `AppDelegate.powerChanged` reconciles
+only when the verdict flips, not on every percent. The app decides and publishes it to
+the saver as the `PowerSaving` flag file (the sandboxed saver host may not reach IOKit),
+cleared on quit like `DesktopCovered`.
+
+Released never means black. Both the app's windows and the saver's player go, and the
+saver shows one frozen frame (`VideoPresentation.frame`, point-sized: a Retina one
+weighs as much as the paused decoder it replaces) on its own layer. Measured in the
+saver: playing 3% / 31 MB, power saving 0% / 23 MB with the video file closed, back to
+a warm decoder when it ends.
+
 Deliberately not built:
 - An LRU or "keep warm" cache of pipelines. It would hold decoders nobody is watching;
   the weak cache is the right one.
 - A cap on distinct decoders. It would override the user's choices.
-- Pausing in Low Power Mode.
+- Pausing in Low Power Mode. Battery Saver covers it with a threshold the user picks.
+
+### Every reason to stop needs an event that undoes it
+
+Every "the wallpaper stopped and never came back" bug so far was one input to a stop
+decision that nothing ever cleared: a memory *warning* macOS holds for hours, and a
+`startAnimation()` that WallpaperAgent sends before a respawned saver has a view. So:
+
+- A new reason to stop playback goes into one of the two pure decisions,
+  `WallpaperEngine.rate(...)` (app) or `SaverPlayback.decide(...)` (saver), with a test.
+  Never as an extra `guard` in a view.
+- Name the event that clears it, and check that it really arrives. If it comes from
+  macOS ("should call", "is supposed to"), add a second way back that we control, the
+  way `screensWoke` backs up `startAnimation`.
+- A test that pins the wrong behavior is worse than none: `testPressureLevels` once
+  asserted warning → throttle. Assert what the user sees, not what the code does.
+
+### Verifying a change
+
+Unit tests can't see WallpaperAgent, loginwindow or the shield, and every lock-screen
+bug was invisible to them. A change to playback, the saver, sleep/lock or pressure is
+done only when `scripts/check-wallpaper.sh` agrees on the real Mac:
+
+1. Build the Release product the user runs, quit W4llsky (so `applicationWillTerminate`
+   clears the flags), relaunch with `open -a`, and `killall legacyScreenSaver` so
+   WallpaperAgent respawns it with the newly installed saver (check the pid changed).
+2. `scripts/check-wallpaper.sh`: desktop visible means W4llsky at a few % and the saver
+   `paused`. `video=closed` in the saver, or its last decision `none` with the display
+   on, is a black lock screen waiting to happen.
+3. `scripts/check-wallpaper.sh watch`, then lock ~10s, unlock (and sleep the display, or
+   unplug, if the change touches those). The saver must go `playing` with CPU above 0
+   while locked, and W4llsky back to a few % after. Read it before saying it works.
+
+"It looked fine" isn't a result. CPU above 0 while it should play, 0 while it shouldn't,
+and one decoder are.
 
 ### Scaling (why a video looks right on any display)
 
@@ -337,8 +395,12 @@ whatever locks the Mac — so the menu hides the screen-saver items (hot key, ho
 "Starts After") while that mode is on rather than leaving switches that do nothing.
 
 `W4llskySaverView` builds its `WallpaperPlayer` in `syncPlayback()`, not in `init`, and
-drops it whenever the view stops animating or leaves its window. Setting the rate to 0
-is not enough: only releasing the player frees the decoder.
+drops it on an explicit `stopAnimation()` or when the view leaves its window. Setting the
+rate to 0 is not enough: only releasing the player frees the decoder. It does **not** wait
+for `startAnimation()`: WallpaperAgent logs "starting animation" before a (re)spawned
+`legacyScreenSaver` has a view, the call never arrives, and gating on `isAnimating` left
+the saver with no player at all, which is a black lock screen. The shared decoder makes a
+view that plays unasked cost one layer.
 
 It also read `LockScreenConfig` exactly once, in `init` — and *WallpaperAgent* decides when
 that happens, which can be hours before the user picks a different scaling. So every

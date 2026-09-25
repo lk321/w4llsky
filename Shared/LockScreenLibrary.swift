@@ -105,13 +105,31 @@ enum LockScreenLibrary {
         FileManager.default.fileExists(atPath: coverURL.path)
     }
 
-    /// Compares against the file, not a cached flag, so it is right after a crash too.
     static func setDesktopCovered(_ covered: Bool) {
-        guard covered != isDesktopCovered else { return }
-        if covered {
-            guard FileManager.default.createFile(atPath: coverURL.path, contents: nil) else { return }
+        setFlag(coverURL, covered)
+    }
+
+    /// Exists while W4llsky is saving battery: the saver swaps its video for a still frame
+    /// and frees the decoder, like W4llsky's own windows. The app decides because the
+    /// battery is read through IOKit, which the sandboxed saver host may not reach. Same
+    /// notification as the cover, and the same crash caveat.
+    static var powerSavingURL: URL { folder.appendingPathComponent("PowerSaving") }
+
+    static var isPowerSaving: Bool {
+        FileManager.default.fileExists(atPath: powerSavingURL.path)
+    }
+
+    static func setPowerSaving(_ saving: Bool) {
+        setFlag(powerSavingURL, saving)
+    }
+
+    /// Compares against the file, not a cached flag, so it is right after a crash too.
+    private static func setFlag(_ url: URL, _ on: Bool) {
+        guard on != FileManager.default.fileExists(atPath: url.path) else { return }
+        if on {
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else { return }
         } else {
-            try? FileManager.default.removeItem(at: coverURL)
+            try? FileManager.default.removeItem(at: url)
         }
         DistributedNotificationCenter.default().postNotificationName(
             coverChangedNotification, object: nil, userInfo: nil, deliverImmediately: true

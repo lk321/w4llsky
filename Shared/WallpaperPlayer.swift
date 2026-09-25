@@ -173,6 +173,9 @@ final class WallpaperPlayer {
         pipeline.setRate(rate, for: self)
     }
 
+    /// Seconds into the clip, so a still frame can freeze the one that was showing.
+    var position: Double { pipeline.position }
+
     /// Rebuilds this layer's video surface.
     ///
     /// Two things take it away: the display going to sleep, and the lock screen's shield

@@ -16,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lockHotKey: LockHotKey?
     private var wakeTokens: [NSObjectProtocol] = []
     private var pressure: SystemPressure?
+    private var battery: BatteryMonitor?
+    /// On battery and below the user's threshold: nothing decodes, in the app or the saver.
+    private var isBatteryLow = false
     /// The saver has to play on the lock screen whatever covers the desktop.
     private var isScreenLocked = false
     /// The unit tests run inside this app. Their host must not tell the real saver to pause.
@@ -98,12 +101,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         engine.setThrottled(pressure?.level != .normal)
 
+        // Low battery frees the decoders the same way critical memory does. IOKit calls
+        // back on every percent, so only a change of verdict reconciles.
+        battery = BatteryMonitor { [weak self] in self?.powerChanged() }
+        isBatteryLow = BatteryMonitor.isLow(BatteryMonitor.read(), threshold: store.configuration.batteryThreshold)
+
         if !isTestHost { ScreenSaverInstaller.installIfOutdated() } // a test run would install its Debug saver
         SystemScreenSaver.removeRedundantScreenSaverSelection()
         reconcile(displayObserver.current)
 
         menuBar = MenuBarController(engine: engine, store: store, displayObserver: displayObserver)
         menuBar?.pressureLevel = { [weak self] in self?.pressure?.level ?? .normal }
+        menuBar?.isBatteryLow = { [weak self] in self?.isBatteryLow ?? false }
+        menuBar?.onPowerSettingsChanged = { [weak self] in self?.powerChanged() }
         refreshLockHotKey()
         menuBar?.onLockSetupChanged = { [weak self] in self?.lockSetupChanged() }
     }
@@ -112,6 +122,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// gets here; see `LockScreenLibrary.coverURL` for the crash case.
     func applicationWillTerminate(_ notification: Notification) {
         publishCover(false)
+        if !isTestHost { LockScreenLibrary.setPowerSaving(false) }
+    }
+
+    private func powerChanged() {
+        let low = BatteryMonitor.isLow(BatteryMonitor.read(), threshold: store.configuration.batteryThreshold)
+        guard low != isBatteryLow else { return }
+        isBatteryLow = low
+        reconcile(displayObserver.current)
     }
 
     /// The desktop hands over to the lock screen and back. On lock the saver takes the
@@ -165,9 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Applies persisted assignments to whatever displays are currently connected,
     /// tears down windows for displays that disappeared, and repositions the rest.
     private func reconcile(_ snapshots: [DisplaySnapshot]) {
-        // Critical memory: every window goes, and none is built until it's over. The
-        // system's own desktop picture shows through meanwhile.
-        guard pressure?.level != .release else {
+        if !isTestHost { LockScreenLibrary.setPowerSaving(isBatteryLow) }
+        // Critical memory or low battery: every window goes, and with it every decoder.
+        // None is built until it's over. What shows through is the saver's still frame
+        // (it releases too) or the system's own desktop picture.
+        guard pressure?.level != .release, !isBatteryLow else {
             engine.removeAllForMissingDisplays(currentIDs: [])
             publishCover(false)
             return

@@ -23,7 +23,10 @@ final class SystemPressure {
     /// Pure so every combination can be checked without starving the machine.
     nonisolated static func level(memory: DispatchSource.MemoryPressureEvent, thermal: ProcessInfo.ThermalState) -> Level {
         if memory.contains(.critical) { return .release }
-        if memory.contains(.warning) || thermal == .serious || thermal == .critical { return .throttle }
+        // A memory *warning* is deliberately not here. Rate 0 frees no memory (only dropping
+        // the player does), and macOS can sit at "warn" for hours with a third of RAM free:
+        // throttling on it froze the desktop and blacked out the lock screen for nothing.
+        if thermal == .serious || thermal == .critical { return .throttle }
         return .normal
     }
 

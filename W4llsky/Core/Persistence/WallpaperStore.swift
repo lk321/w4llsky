@@ -22,7 +22,12 @@ struct WallpaperConfiguration: Codable {
     /// decoder ignores property defaults but tolerates a missing optional.
     var lockHotKey: Bool?
 
+    /// Below this battery percent, on battery, the video is swapped for a still frame and
+    /// its decoder freed. 0 = off, 100 = whenever on battery. Optional for old configs.
+    var batterySaverPercent: Int?
+
     var usesLockHotKey: Bool { lockHotKey ?? true }
+    var batteryThreshold: Int { batterySaverPercent ?? 50 }
 }
 
 final class WallpaperStore {

@@ -45,7 +45,8 @@ final class WallpaperRateTests: XCTestCase {
         typealias P = SystemPressure
         XCTAssertEqual(P.level(memory: .normal, thermal: .nominal), .normal)
         XCTAssertEqual(P.level(memory: .normal, thermal: .fair), .normal)
-        XCTAssertEqual(P.level(memory: .warning, thermal: .nominal), .throttle)
+        XCTAssertEqual(P.level(memory: .warning, thermal: .nominal), .normal, "rate 0 frees no memory")
+        XCTAssertEqual(P.level(memory: .warning, thermal: .serious), .throttle)
         XCTAssertEqual(P.level(memory: .normal, thermal: .serious), .throttle)
         XCTAssertEqual(P.level(memory: .normal, thermal: .critical), .throttle)
         XCTAssertEqual(P.level(memory: .critical, thermal: .nominal), .release, "rate 0 does not free a decoder")
@@ -55,6 +56,66 @@ final class WallpaperRateTests: XCTestCase {
     /// Sleeping while covered must not come back playing just because it got uncovered.
     func testReasonsToStopDontCancelOut() {
         XCTAssertEqual(WallpaperEngine.rate(1, paused: true, suspended: true, throttled: true, visible: false), 0)
+    }
+}
+
+/// What a saver view shows. Every past black lock screen was one of these inputs stuck.
+final class SaverPlaybackTests: XCTestCase {
+    private func decide(
+        inWindow: Bool = true, hasVideo: Bool = true, stopped: Bool = false, released: Bool = false,
+        throttled: Bool = false, covered: Bool = false, locked: Bool = false
+    ) -> SaverPlayback {
+        SaverPlayback.decide(
+            inWindow: inWindow, hasVideo: hasVideo, stopped: stopped, released: released,
+            throttled: throttled, covered: covered, locked: locked, rate: 1.5
+        )
+    }
+
+    /// There is deliberately no "animating" input: WallpaperAgent's `startAnimation` gets
+    /// lost on respawn, and waiting for it left the lock screen black.
+    func testPlaysWithoutBeingToldToStart() {
+        XCTAssertEqual(decide(), .playing(1.5))
+    }
+
+    func testNothingToShowShowsNothing() {
+        XCTAssertEqual(decide(inWindow: false), .none)
+        XCTAssertEqual(decide(hasVideo: false), .none)
+        XCTAssertEqual(decide(stopped: true, locked: true), .none, "display sleep: nobody can see it")
+    }
+
+    func testTheLockScreenAlwaysMoves() {
+        XCTAssertEqual(decide(throttled: true, covered: true, locked: true), .playing(1.5))
+    }
+
+    func testCoverAndHeatPauseTheDesktopCopy() {
+        XCTAssertEqual(decide(covered: true), .paused)
+        XCTAssertEqual(decide(throttled: true), .paused)
+    }
+
+    /// Released means the decoder goes, and a still frame stands in, never black.
+    func testReleasingShowsAStillFrame() {
+        XCTAssertEqual(decide(released: true), .still)
+        XCTAssertEqual(decide(released: true, locked: true), .still, "saving battery on the lock screen too")
+    }
+}
+
+/// Battery Saver fires only on battery, and never on a Mac without one.
+final class BatteryThresholdTests: XCTestCase {
+    typealias R = BatteryMonitor.Reading
+
+    func testBelowTheThresholdOnBattery() {
+        XCTAssertTrue(BatteryMonitor.isLow(R(percent: 49, onBattery: true), threshold: 50))
+        XCTAssertFalse(BatteryMonitor.isLow(R(percent: 50, onBattery: true), threshold: 50))
+    }
+
+    func testPluggedInOrNoBatteryNeverSaves() {
+        XCTAssertFalse(BatteryMonitor.isLow(R(percent: 5, onBattery: false), threshold: 50))
+        XCTAssertFalse(BatteryMonitor.isLow(nil, threshold: 100))
+    }
+
+    func testOffAndAlways() {
+        XCTAssertFalse(BatteryMonitor.isLow(R(percent: 1, onBattery: true), threshold: 0))
+        XCTAssertTrue(BatteryMonitor.isLow(R(percent: 100, onBattery: true), threshold: 100))
     }
 }
 

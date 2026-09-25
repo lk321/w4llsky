@@ -23,6 +23,13 @@ final class W4llskySaverView: ScreenSaverView {
     /// Every saver process reacts on its own, so this holds however WallpaperAgent splits
     /// displays across `legacyScreenSaver` instances.
     private var pressure: SystemPressure?
+    /// Only an explicit `stopAnimation` idles the view. `isAnimating` can't be the gate:
+    /// WallpaperAgent logs "starting animation" before the respawned process has a view to
+    /// tell, so `startAnimation` never arrives and the lock screen stayed black. With the
+    /// decoder shared per process, a view that plays without being asked costs one layer.
+    private var isStopped = false
+    private var still: Task<Void, Never>?
+    private var lastDecision: SaverPlayback?
 
     /// How many views WallpaperAgent has animating in this process, against how many
     /// decoders they share. Views climbing with pipelines at 1 is the design working;
@@ -80,19 +87,34 @@ final class W4llskySaverView: ScreenSaverView {
             name: LockScreenLibrary.changedNotification, object: nil,
             suspensionBehavior: .deliverImmediately
         )
+        // WallpaperAgent stops us on display sleep and is meant to start us on wake, but
+        // its start is exactly the message that has been seen to get lost.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(screensWoke),
+            name: NSWorkspace.screensDidWakeNotification, object: nil
+        )
+    }
+
+    @objc private func screensWoke() {
+        isStopped = false
+        syncPlayback()
     }
 
     @objc private func configChanged() {
         let updated = LockScreenLibrary.load()
         // Scaling and speed apply to the running pipeline; a different file needs a new
         // one, and so does the video being removed.
-        if updated?.videoName != config?.videoName { teardown() }
+        if updated?.videoName != config?.videoName {
+            teardown()
+            hideStill()
+        }
         config = updated
         syncPlayback()
     }
 
     deinit {
         DistributedNotificationCenter.default().removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         if player != nil { MainActor.assumeIsolated { Self.playingViews -= 1 } }
     }
 
@@ -127,11 +149,13 @@ final class W4llskySaverView: ScreenSaverView {
 
     override func startAnimation() {
         super.startAnimation()
+        isStopped = false
         syncPlayback()
     }
 
     override func stopAnimation() {
-        super.stopAnimation() // flips the inherited `isAnimating` that syncPlayback reads
+        super.stopAnimation()
+        isStopped = true
         syncPlayback()
     }
 
@@ -146,43 +170,91 @@ final class W4llskySaverView: ScreenSaverView {
         player?.updatePresentation() // a size change can flip fill vs. letterbox
     }
 
-    /// Builds the video pipeline only while this view is animating in a real window, and
-    /// throws it away the moment it isn't. Building it in `init` instead left a decoder
-    /// running for every view WallpaperAgent happened to make, and it makes more than
-    /// one — see `SystemScreenSaver.removeRedundantScreenSaverSelection()`, which stops
-    /// the duplicates at the source, since nothing here can tell them apart.
+    /// Builds the video pipeline only while `SaverPlayback` says to play, and throws it
+    /// away the moment it doesn't. Building it in `init` once left a decoder running for
+    /// every view WallpaperAgent happened to make, and it makes more than one — see
+    /// `SystemScreenSaver.removeRedundantScreenSaverSelection()`, which stops the
+    /// duplicates at the source, since nothing here can tell them apart.
     private func syncPlayback() {
         let level = pressure?.level ?? .normal
-        guard isAnimating, let config, window != nil, !bounds.isEmpty, level != .release else {
-            teardown()
-            return
+        let decision = SaverPlayback.decide(
+            inWindow: window != nil && !bounds.isEmpty,
+            hasVideo: config != nil,
+            stopped: isStopped,
+            released: level == .release || LockScreenLibrary.isPowerSaving,
+            throttled: level == .throttle,
+            covered: LockScreenLibrary.isDesktopCovered,
+            locked: Self.isLocked,
+            rate: config?.rate ?? 1
+        )
+        if decision != lastDecision {
+            lastDecision = decision
+            Self.log.notice("pid \(getpid()): \(String(describing: decision), privacy: .public)")
         }
 
-        if player == nil {
-            let player = WallpaperPlayer(url: LockScreenLibrary.videoURL, fillMode: config.fillMode)
-            player.view.frame = bounds
-            player.view.autoresizingMask = [.width, .height]
-            addSubview(player.view)
-            player.updatePresentation()
-            self.player = player
-            Self.playingViews += 1
-            Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
+        switch decision {
+        case .none:
+            teardown()
+            hideStill()
+        case .still:
+            showStill(at: player?.position)
+            teardown()
+        case .paused, .playing:
+            guard let config else { return }
+            hideStill()
+            if player == nil {
+                let player = WallpaperPlayer(url: LockScreenLibrary.videoURL, fillMode: config.fillMode)
+                player.view.frame = bounds
+                player.view.autoresizingMask = [.width, .height]
+                addSubview(player.view)
+                player.updatePresentation()
+                self.player = player
+                Self.playingViews += 1
+                Self.log.notice("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
+            }
+            player?.setFillMode(config.fillMode) // may have changed under an existing player
+            if case .playing(let rate) = decision { player?.setRate(rate) } else { player?.setRate(0) }
         }
-        player?.setFillMode(config.fillMode) // may have changed under an existing player
-        // Covered by W4llsky's own windows, nobody sees this copy, but the lock screen needs
-        // it the instant the Mac locks. Rate 0 keeps the decoder warm; releasing it would
-        // mean a cold 4K start behind the password field.
-        let covered = LockScreenLibrary.isDesktopCovered && !Self.isLocked
-        player?.setRate(level == .throttle || covered ? 0 : config.rate)
+    }
+
+    /// The frame that was showing, frozen on this view's own layer (underneath the player's
+    /// view), so releasing the decoder never leaves the desktop or the lock screen black.
+    /// ponytail: `.smart` and `.auto` freeze as a plain fill, and the frame is black for the
+    /// ~0.1s it takes to decode; neither is worth keeping a decoder alive for.
+    private func showStill(at position: Double?) {
+        guard still == nil, layer?.contents == nil, let config else { return }
+        let seconds = position ?? LockScreenLibrary.loadPlayhead()?.position ?? 1
+        // Points, not pixels: a Retina-sized frame weighs as much as the paused decoder it
+        // replaces, and saving memory is the point. A still behind the clock can be soft.
+        let size = bounds.size
+        let asset = AVURLAsset(url: LockScreenLibrary.videoURL)
+        let gravity: CALayerContentsGravity = config.fillMode == .fit ? .resizeAspect : .resizeAspectFill
+        still = Task { [weak self] in
+            let image = await VideoPresentation.frame(of: asset, at: seconds, maxSize: size)
+            guard let self, !Task.isCancelled else { return }
+            self.layer?.contentsGravity = gravity
+            self.layer?.contents = image
+            self.still = nil
+        }
+    }
+
+    private func hideStill() {
+        still?.cancel()
+        still = nil
+        layer?.contents = nil
     }
 
     /// Releasing the player is what frees the decoder — setting its rate to 0 does not.
     private func teardown() {
-        guard let player else { return }
-        player.view.removeFromSuperview()
-        self.player = nil
+        guard player != nil else { return }
+        // No local binding and a drained pool, so the count logged below is the real one:
+        // either would keep the player, and its decoder, alive until this returns.
+        autoreleasepool {
+            player?.view.removeFromSuperview()
+            player = nil
+        }
         Self.playingViews -= 1
-        Self.log.debug("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
+        Self.log.notice("pid \(getpid()): \(Self.playingViews) views, \(VideoPipeline.liveCount) decoders")
     }
 
     override var hasConfigureSheet: Bool { false }

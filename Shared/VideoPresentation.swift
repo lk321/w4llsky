@@ -93,13 +93,7 @@ enum VideoPresentation {
     /// then static — no second decode pipeline, so it costs nothing while running.
     /// Rendered small on purpose: it's blurred, upscaling it costs no visible quality.
     static func blurredBackdrop(of asset: AVAsset) async -> CGImage? {
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 640, height: 640)
-        generator.requestedTimeToleranceBefore = .positiveInfinity
-        generator.requestedTimeToleranceAfter = .positiveInfinity
-
-        guard let frame = try? await generator.image(at: CMTime(value: 1, timescale: 1)).image else { return nil }
+        guard let frame = await frame(of: asset, at: 1, maxSize: CGSize(width: 640, height: 640)) else { return nil }
 
         let source = CIImage(cgImage: frame)
         let blurred = source
@@ -108,5 +102,17 @@ enum VideoPresentation {
             .cropped(to: source.extent)
             .applyingFilter("CIColorControls", parameters: [kCIInputBrightnessKey: -0.12, kCIInputSaturationKey: 1.15])
         return CIContext().createCGImage(blurred, from: blurred.extent)
+    }
+
+    /// One frame, from the nearest keyframe (1s apart in the files measured), so it
+    /// decodes at most one GOP and nothing is left running afterwards.
+    static func frame(of asset: AVAsset, at seconds: Double, maxSize: CGSize) async -> CGImage? {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = maxSize
+        generator.requestedTimeToleranceBefore = .positiveInfinity
+        generator.requestedTimeToleranceAfter = .positiveInfinity
+        let time = CMTime(seconds: seconds.isFinite ? max(seconds, 0) : 0, preferredTimescale: 600)
+        return try? await generator.image(at: time).image
     }
 }

@@ -29,6 +29,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onLockSetupChanged: (() -> Void)?
     /// So a wallpaper stopped by memory or heat pressure doesn't read as a bug.
     var pressureLevel: (() -> SystemPressure.Level)?
+    var isBatteryLow: (() -> Bool)?
+    var onPowerSettingsChanged: (() -> Void)?
 
     private let statusItem: NSStatusItem
     private var isPaused = false
@@ -71,7 +73,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         pause.target = self
         menu.addItem(pause)
         if let level = pressureLevel?(), level != .normal {
-            menu.addItem(infoItem(level == .release ? "Stopped: the Mac is low on memory" : "Paused: memory or heat pressure"))
+            menu.addItem(infoItem(level == .release ? "Stopped: the Mac is low on memory" : "Paused: the Mac is running hot"))
+        }
+        if isBatteryLow?() == true {
+            menu.addItem(infoItem("Still frame: saving battery"))
+        }
+        // Only on a Mac that has a battery.
+        if BatteryMonitor.read() != nil {
+            menu.addItem(submenuItem(title: "Battery Saver", submenu: buildBatteryMenu()))
         }
 
         menu.addItem(.separator())
@@ -203,6 +212,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             item.target = self
             item.representedObject = speed
             item.state = store.configuration.playbackRate == speed ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func buildBatteryMenu() -> NSMenu {
+        let menu = NSMenu()
+        let choices: [(String, Int)] = [("Off", 0), ("Below 20%", 20), ("Below 30%", 30), ("Below 50%", 50), ("Below 80%", 80), ("Always on Battery", 100)]
+        for (title, percent) in choices {
+            let item = NSMenuItem(title: title, action: #selector(setBatteryThreshold(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = percent
+            item.state = store.configuration.batteryThreshold == percent ? .on : .off
             menu.addItem(item)
         }
         return menu
@@ -378,6 +400,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard var config = LockScreenLibrary.load() else { return }
         config.fillMode = choice.mode
         do { try LockScreenLibrary.save(config) } catch { report(error.localizedDescription) }
+    }
+
+    @objc private func setBatteryThreshold(_ sender: NSMenuItem) {
+        guard let percent = sender.representedObject as? Int else { return }
+        store.configuration.batterySaverPercent = percent
+        store.save()
+        onPowerSettingsChanged?()
     }
 
     @objc private func setSpeed(_ sender: NSMenuItem) {
